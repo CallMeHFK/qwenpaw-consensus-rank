@@ -1,0 +1,70 @@
+{
+  "id": "listwise-rank",
+  "name": "Listwise Rank Tool",
+  "version": "1.0.0",
+  "description": "Multi-judge consensus ranking: cross-family LLM judges independently rank candidates (anonymized), Borda-aggregated into a consensus with Spearman consistency report",
+  "description_i18n": {
+    "zh-CN": "多 Judge 共识排序：跨家族大模型对匿名候选独立全排序，Borda 聚合共识并给出 Spearman 一致性报告，消除单一模型偏好",
+    "en-US": "Multi-judge consensus ranking with anonymization, Borda aggregation and Spearman consistency report"
+  },
+  "author": "leo",
+  "entry": {
+    "backend": "backend/main.py"
+  },
+  "dependencies": [],
+  "qwenpaw_version": {
+    "min": "1.1.6",
+    "max": "2.1.0"
+  },
+  "meta": {
+    "tools": [
+      {
+        "name": "rank_candidates_listwise",
+        "description": "Rank candidates via multi-judge consensus (cross-family LLMs, anonymized listwise ranking, Borda aggregation, Spearman report)",
+        "icon": "📊",
+        "requires_config": false,
+        "config_fields": [
+          {
+            "name": "judges_json",
+            "label": "Judges Config (JSON array)",
+            "type": "text",
+            "required": false,
+            "placeholder": "[{\"name\":\"agnes\",\"model\":\"agnes-2.5-flash\",\"base_url\":\"https://gateway/v1\",\"api_key_env\":\"OPENAI_API_KEY\"}]",
+            "help": "Each judge: name/model required; base_url default OPENAI_BASE_URL env; api_key_env default OPENAI_API_KEY; optional temperature/extra_body. Empty = use JUDGE_MODELS env or built-in defaults"
+          },
+          {
+            "name": "temperature",
+            "label": "Judge Temperature",
+            "type": "number",
+            "required": false,
+            "placeholder": "0.2",
+            "min": 0,
+            "max": 2,
+            "help": "Sampling temperature for judge calls (default: 0.2)"
+          },
+          {
+            "name": "timeout",
+            "label": "Per-judge Timeout (seconds)",
+            "type": "number",
+            "required": false,
+            "placeholder": "180",
+            "min": 10,
+            "max": 600,
+            "help": "HTTP timeout per judge call (default: 180)"
+          },
+          {
+            "name": "max_tokens",
+            "label": "Max Tokens per Judge Call",
+            "type": "number",
+            "required": false,
+            "placeholder": "4096",
+            "min": 256,
+            "max": 32768,
+            "help": "Completion budget per judge (default: 4096)"
+          }
+        ]
+      }
+    ],
+    "api_key_hint": "每个 judge 的密钥从环境变量读取（api_key_env 指定变量名，默认 OPENAI_API_KEY）。请在 ~/.qwenpaw.secret/envs.json 配置各 judge 的 *_API_KEY；base_url 缺省用 OPENAI_BASE_URL。详见插件 README「用户配置指南」"
+  }
+}
