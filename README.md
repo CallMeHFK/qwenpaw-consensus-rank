@@ -1,4 +1,4 @@
-# qwenpaw-listwise-rank
+# qwenpaw-consensus-rank
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![QwenPaw](https://img.shields.io/badge/QwenPaw-%3E%3D1.1.6-green)](https://github.com/agentscope-ai/QwenPaw)
@@ -97,7 +97,7 @@ regular environment variables.
 
 1. Copy this repo into `~/.qwenpaw/plugins/listwise-rank/`:
    ```bash
-   git clone https://github.com/CallMeHFK/qwenpaw-listwise-rank.git \
+   git clone https://github.com/CallMeHFK/qwenpaw-consensus-rank.git \
        ~/.qwenpaw/plugins/listwise-rank
    ```
 2. Configure the judge API keys (env vars / secret store, see above).
