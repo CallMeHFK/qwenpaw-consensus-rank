@@ -115,6 +115,16 @@ judge endpoint**. For sensitive data: configure only intranet/local judges,
 and always reference keys via `api_key_env` — never inline them in
 `judges_json` or call arguments.
 
+Additional hardening tips:
+
+- **Always use `https://` for `base_url`.** The tool does not enforce TLS;
+  an `http://` gateway would transmit candidate texts in plaintext.
+- API keys are read from environment variables at call time and are only
+  placed in the `Authorization` header — they never appear in URLs, logs,
+  or error messages.
+- The tool performs no telemetry and writes no files; the only network
+  traffic is the judge calls themselves.
+
 ## Example output
 
 ```markdown
