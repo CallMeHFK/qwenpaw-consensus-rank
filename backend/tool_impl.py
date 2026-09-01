@@ -11,11 +11,18 @@ Judges resolution order:
   1. inline ``judges`` tool argument (JSON array string)
   2. plugin config field ``judges_json``
   3. ``JUDGE_MODELS`` env (comma separated, global OPENAI_BASE_URL/OPENAI_API_KEY)
-  4. built-in defaults (qwen3-14b/deepseek-v3/gpt-4o on global gateway)
+  4. built-in defaults: a cross-family, multi-endpoint lineup that reads each
+     endpoint from its own env var (OPENAI_BASE_URL / NEW_API_URL /
+     SENSENOVA_BASE_URL). Judges whose endpoint env vars are missing or
+     unreachable are skipped with a warning, so one dead gateway no longer
+     takes down the whole run.
 
-Each judge entry: name, model, base_url?, api_key_env?, temperature?,
-extra_body?  (extra_body merges arbitrary fields into the request body,
-e.g. vLLM's chat_template_kwargs.enable_thinking=false).
+Each judge entry: name, model, base_url?, base_url_env?, api_key_env?,
+temperature?, extra_body?  (extra_body merges arbitrary fields into the
+request body, e.g. vLLM's chat_template_kwargs.enable_thinking=false).
+``base_url`` / ``base_url_env`` fall back to the global OPENAI_BASE_URL.
+A base URL without a path gets ``/v1`` appended automatically (e.g.
+``https://token.sensenova.cn`` -> ``https://token.sensenova.cn/v1``).
 """
 
 import asyncio
@@ -24,6 +31,7 @@ import logging
 import os
 import random
 import re
+import urllib.error
 import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -33,11 +41,95 @@ from agentscope.tool import ToolChunk
 
 logger = logging.getLogger(__name__)
 
+# Cross-family, multi-endpoint default lineup (validated 2026-09-01).
+# Each entry pins its endpoint via base_url_env so a single dead gateway
+# cannot take down the whole consensus run. base_url_env is resolved from
+# the process environment at call time; judges whose env var is empty are
+# skipped with a warning. The NEW_API judge disables thinking mode
+# (vLLM chat_template_kwargs) — its reasoning chain otherwise burns the
+# whole token budget before emitting the ranking.
 _DEFAULT_JUDGES = [
-    {"name": "qwen", "model": "qwen3-14b"},
-    {"name": "deepseek", "model": "deepseek-v3"},
-    {"name": "gpt", "model": "gpt-4o"},
+    {"name": "agnes", "model": "agnes-2.5-flash",
+     "base_url_env": "OPENAI_BASE_URL", "api_key_env": "OPENAI_API_KEY"},
+    {"name": "qwen35", "model": "qwen3.5-122b-a10b-fp8",
+     "base_url_env": "NEW_API_URL", "api_key_env": "NEW_API_KEY",
+     "extra_body": {"chat_template_kwargs": {"enable_thinking": False}}},
+    {"name": "glm", "model": "glm-5.2",
+     "base_url_env": "SENSENOVA_BASE_URL", "api_key_env": "SENSENOVA_API_KEY"},
 ]
+
+# Well-known OpenAI-compatible provider api_key env vars. ANY OpenAI-
+# compatible endpoint works — official APIs or self-hosted gateways
+# (vLLM / Ollama / one-api / new-api). An env var counts as "configured"
+# when it is set and non-empty; the key itself is never logged.
+_KNOWN_KEY_ENVS = [
+    "OPENAI_API_KEY",       # OpenAI or any gateway via OPENAI_BASE_URL
+    "NEW_API_KEY",
+    "SENSENOVA_API_KEY",
+    "DASHSCOPE_API_KEY",    # Alibaba Bailian (Qwen)
+    "DEEPSEEK_API_KEY",
+    "MOONSHOT_API_KEY",     # Kimi
+    "ZHIPUAI_API_KEY",      # Zhipu GLM
+    "OPENROUTER_API_KEY",
+    "SILICONFLOW_API_KEY",
+    "TOGETHER_API_KEY",
+    "GROQ_API_KEY",
+    "MISTRAL_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "OPENCODE_API_KEY",
+]
+
+
+def _detect_config() -> List[str]:
+    """Return provider api_key env var names that are set (names only)."""
+    return [k for k in _KNOWN_KEY_ENVS
+            if os.environ.get(k, "").strip()]
+
+
+_SETUP_GUIDE = """\
+# ⚙️ consensus-rank 初始化向导
+
+检测到本机尚未配置任何可用的 LLM 评审端点，工具暂时无法运行。
+只需配置**任意一家** OpenAI 兼容的模型提供商即可启用（也支持本地 vLLM/Ollama）。
+
+## 快速开始（三选一）
+
+1. **通用网关**：设置 `OPENAI_API_KEY`（可选 `OPENAI_BASE_URL`，缺省指向官方地址）
+2. **其他厂商**：设置下表对应的密钥环境变量
+3. **插件设置**：在 QwenPaw 设置界面为本工具填写 `judges_json`（见下方示例）
+
+密钥写入 `~/.qwenpaw.secret/envs.json` 或进程环境变量均可；
+改动 envs.json 后需**重启 QwenPaw** 生效。
+
+## 常见提供商对照表（任选其一即可）
+
+| 提供商 | api_key 环境变量 | base_url（如需覆盖） |
+|---|---|---|
+| OpenAI 官方 | `OPENAI_API_KEY` | （缺省 https://api.openai.com/v1）|
+| DeepSeek | `DEEPSEEK_API_KEY` | https://api.deepseek.com/v1 |
+| Moonshot Kimi | `MOONSHOT_API_KEY` | https://api.moonshot.cn/v1 |
+| 智谱 GLM | `ZHIPUAI_API_KEY` | https://open.bigmodel.cn/api/paas/v4 |
+| 阿里百炼 Qwen | `DASHSCOPE_API_KEY` | https://dashscope.aliyuncs.com/compatible-mode/v1 |
+| OpenRouter（聚合） | `OPENROUTER_API_KEY` | https://openrouter.ai/api/v1 |
+| SiliconFlow（聚合） | `SILICONFLOW_API_KEY` | https://api.siliconflow.cn/v1 |
+| 本地 vLLM/Ollama | （任意非空占位变量） | http://localhost:11434/v1 |
+
+## 进阶：judges_json（多厂商混用去偏，建议 ≥3 家不同厂商）
+
+```json
+[
+  {"name": "glm", "model": "glm-5.2",
+   "base_url_env": "SENSENOVA_BASE_URL", "api_key_env": "SENSENOVA_API_KEY"},
+  {"name": "qwen", "model": "qwen3.5-122b-a10b-fp8",
+   "base_url_env": "NEW_API_URL", "api_key_env": "NEW_API_KEY",
+   "extra_body": {"chat_template_kwargs": {"enable_thinking": false}}}
+]
+```
+
+字段说明：`name`/`model` 必填；端点用 `base_url` 或 `base_url_env`（都缺省时
+回退 `OPENAI_BASE_URL`，无路径的地址自动补 `/v1`）；`api_key_env` 指定密钥
+环境变量名。配置完成后重新调用本工具即可开始排序。
+"""
 
 _PROMPT = (
     "你是评估专家。下面给出一组匿名候选（标识符 A、B、C……）。"
@@ -54,15 +146,13 @@ def _load_plugin_config(tool_name: str) -> Dict[str, Any]:
     """Read per-tool config from the QwenPaw runtime (gracefully degrade)."""
     try:
         from qwenpaw.plugins import get_tool_config
-
-        cfg = get_tool_config(tool_name)
-        return cfg if isinstance(cfg, dict) else {}
+        return get_tool_config(tool_name) or {}
     except Exception:  # standalone / tests / runtime not ready
         return {}
 
 
 def _norm(s: str) -> str:
-    return re.sub(r"\s+", " ", str(s or "").strip().lstrip("-*·").strip())
+    return re.sub("\s+", " ", str(s or "").strip().lstrip("-*·").strip())
 
 
 def _parse_judges(raw: str) -> Tuple[List[Dict[str, Any]], str]:
@@ -100,12 +190,60 @@ def _resolve_judges(
     return _DEFAULT_JUDGES, "builtin-defaults"
 
 
+def _normalize_base_url(base: str) -> str:
+    """Normalize an OpenAI-compatible base URL.
+
+    - strip trailing slash
+    - append ``/v1`` when the URL has no path at all (common gotcha:
+      ``https://token.sensenova.cn`` -> ``https://token.sensenova.cn/v1``)
+    """
+    base = base.strip().rstrip("/")
+    if not base:
+        return ""
+    # path part after scheme://host
+    parts = base.split("://", 1)
+    rest = parts[1] if len(parts) == 2 else parts[0]
+    if "/" not in rest:
+        base += "/v1"
+    return base
+
+
 def _resolve_endpoint(judge: Dict[str, Any]) -> Tuple[str, str]:
-    base = str(judge.get("base_url") or os.environ.get(
-        "OPENAI_BASE_URL", "")).strip().rstrip("/")
+    base = str(judge.get("base_url")
+               or os.environ.get(str(judge.get("base_url_env") or ""), "")
+               or os.environ.get("OPENAI_BASE_URL", ""))
+    base = _normalize_base_url(base)
     key = os.environ.get(
         str(judge.get("api_key_env") or "OPENAI_API_KEY"), "").strip()
     return base, key
+
+
+def _explain_http_error(code: int, body: str) -> str:
+    """Map a gateway HTTP error to an actionable one-line hint."""
+    low = body.lower()
+    try:  # surface the gateway's own message when available
+        j = json.loads(body)
+        msg = str(j.get("error", {}).get("message")
+                  or j.get("message") or "").strip()
+    except Exception:
+        msg = body.strip().replace("\n", " ")[:120]
+    detail = f"HTTP {code}: {msg}" if msg else f"HTTP {code}"
+    if "creditserror" in low or "no payment method" in low:
+        return (f"{detail} -> no payment method / out of credits on this "
+                "endpoint; add billing or pick another judge")
+    if code == 401 or "无效的令牌" in body or "invalid token" in low:
+        return (f"{detail} -> token rejected; check the api_key_env value "
+                "(expired/rotated?)")
+    if code == 429 or "quota exceeded" in low:
+        return (f"{detail} -> quota/rate limit; increase the quota or "
+                "switch to another model on this endpoint")
+    if code == 503 and ("no available channel" in low
+                        or "model_not_found" in low):
+        return (f"{detail} -> model has no active channel under the "
+                "current token group; use another model name")
+    if code >= 500:
+        return f"{detail} -> gateway-side failure; retry later or switch judge"
+    return detail
 
 
 def _call_judge(
@@ -136,8 +274,15 @@ def _call_judge(
         headers={"Content-Type": "application/json",
                  "Authorization": "Bearer " + key},
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        try:
+            body = e.read().decode("utf-8", "ignore")
+        except Exception:
+            body = ""
+        raise RuntimeError(_explain_http_error(e.code, body)) from None
     ch = (data.get("choices") or [{}])[0]
     msg = ch.get("message") or {}
     content = (msg.get("content") or "").strip()
@@ -146,214 +291,3 @@ def _call_judge(
     if not content:
         raise RuntimeError(f"empty content (finish={ch.get('finish_reason')})")
     return content
-
-
-def _parse_ranking(raw: str) -> List[str]:
-    """Extract A>B>C style / '1. A 2. B' / JSON list from judge output."""
-    if isinstance(raw, list):
-        return [str(x).strip().upper() for x in raw if str(x).strip()]
-    raw = raw.strip()
-    try:
-        data = json.loads(raw)
-        if isinstance(data, list):
-            return [str(x).strip().upper() for x in data]
-        if isinstance(data, dict) and "ranking" in data:
-            return [str(x).strip().upper() for x in data["ranking"]]
-    except Exception:
-        pass
-    items = re.findall(r"\b([A-Z])\b", raw)
-    if not items:
-        numbered = re.findall(r"^\s*(\d+)[.):]\s*([A-Z])", raw, re.M)
-        items = [x[1] for x in sorted(numbered, key=lambda t: int(t[0]))]
-    seen: List[str] = []
-    for it in items:
-        if it not in seen:
-            seen.append(it)
-    return seen
-
-
-def _spearman(ranking: List[str], consensus: List[str],
-              all_ids: List[str]) -> float:
-    r1 = {x: i for i, x in enumerate(ranking)}
-    r2 = {x: i for i, x in enumerate(consensus)}
-    n = len(all_ids)
-    if n < 2:
-        return 0.0
-    avg = (n - 1) / 2.0
-    d2 = sum((r1.get(x, avg) - r2.get(x, avg)) ** 2 for x in all_ids)
-    return 1 - 6 * d2 / (n * (n * n - 1))
-
-
-async def rank_candidates_listwise(
-    candidates: List[str],
-    task: str = "",
-    judges: str = "",
-    seed: int = 42,
-) -> ToolChunk:
-    """Rank candidates via multi-judge consensus and return a report.
-
-    Cross-family LLM judges each independently rank the anonymized
-    candidates; results are Borda-aggregated into a consensus with a
-    Spearman consistency report, avoiding single-model bias.
-
-    Args:
-        candidates: Candidate list, each a plain string (2-26 items).
-        task: Optional task background so judges rank "for this task"
-            (reduces refusals and improves relevance).
-        judges: Optional judges override, JSON array string. Each entry:
-            name, model, base_url?, api_key_env?, temperature?, extra_body?.
-            Leave empty to use plugin config / JUDGE_MODELS env / defaults.
-        seed: Anonymization shuffle seed for reproducibility (default 42;
-            0 = random order each run).
-
-    Returns:
-        ToolChunk: markdown consensus report (Borda table + judge
-        consistency table + skipped-judge warnings).
-    """
-    try:
-        return await _run(candidates, task, judges, seed)
-    except Exception as e:
-        logger.error("listwise rank failed: %s", e, exc_info=True)
-        return ToolChunk(
-            state=ToolResultState.ERROR,
-            content=[TextBlock(type="text",
-                               text=f"Error: listwise rank failed - {e}")],
-        )
-
-
-async def _run(
-    candidates: List[str],
-    task: str,
-    judges_param: str,
-    seed: int,
-) -> ToolChunk:
-    tool_cfg = _load_plugin_config("rank_candidates_listwise")
-
-    # --- normalize + dedupe ---
-    seen_set = set()
-    uniq: List[str] = []
-    for c in candidates or []:
-        n = _norm(c)
-        k = n.lower()
-        if n and k not in seen_set:
-            seen_set.add(k)
-            uniq.append(n)
-    if len(uniq) < 2:
-        return ToolChunk(
-            state=ToolResultState.ERROR,
-            content=[TextBlock(type="text",
-                               text="Error: need >= 2 distinct candidates")],
-        )
-    if len(uniq) > _MAX_CANDIDATES:
-        return ToolChunk(
-            state=ToolResultState.ERROR,
-            content=[TextBlock(type="text", text=(
-                f"Error: too many candidates ({len(uniq)}); "
-                f"max {_MAX_CANDIDATES} (labels A..Z)"))],
-        )
-
-    # --- anonymize ---
-    idx = list(range(len(uniq)))
-    if seed:
-        random.Random(seed).shuffle(idx)
-    else:
-        random.shuffle(idx)
-    labels = [chr(ord("A") + i) for i in range(len(uniq))]
-    label_of = {labels[i]: uniq[pos] for i, pos in enumerate(idx)}
-    cand_text = "\n".join(f"{lab}: {label_of[lab]}" for lab in labels)
-
-    prompt = _PROMPT.format(cands=cand_text)
-    if task and task.strip():
-        prompt = f"任务背景：{task.strip()}\n\n" + prompt
-
-    # --- resolve judges ---
-    try:
-        judges, src = _resolve_judges(judges_param, tool_cfg)
-    except Exception as e:
-        return ToolChunk(
-            state=ToolResultState.ERROR,
-            content=[TextBlock(type="text",
-                               text=f"Error: bad judges config - {e}")],
-        )
-
-    temperature = float(tool_cfg.get("temperature", 0.2) or 0.2)
-    timeout = float(tool_cfg.get("timeout", 180) or 180)
-    max_tokens = int(tool_cfg.get("max_tokens", 4096) or 4096)
-
-    # --- call judges concurrently ---
-    async def one(judge: Dict[str, Any], k: int) -> Dict[str, Any]:
-        name = str(judge.get("name") or f"m{k}")
-        try:
-            raw = await asyncio.to_thread(
-                _call_judge, judge, prompt, temperature, timeout, max_tokens)
-            ranking = _parse_ranking(raw)
-            missing = [x for x in labels if x not in ranking]
-            if len(ranking) < 2:
-                raise RuntimeError(f"unparseable ranking: {raw[:80]!r}")
-            return {"name": name, "model": judge.get("model", ""),
-                    "ranking": ranking, "missing": missing, "error": ""}
-        except Exception as e:
-            return {"name": name, "model": judge.get("model", ""),
-                    "ranking": [], "missing": labels, "error": str(e)}
-
-    results = list(await asyncio.gather(
-        *[one(j, k) for k, j in enumerate(judges)]))
-
-    valid = [r for r in results if r["ranking"]]
-    if not valid:
-        detail = "\n".join(
-            f"- {r['name']}: {r['error'] or 'unknown'}" for r in results)
-        return ToolChunk(
-            state=ToolResultState.ERROR,
-            content=[TextBlock(type="text", text=(
-                "Error: all judges failed; check base_url / api_key_env.\n"
-                + detail))],
-        )
-
-    # --- Borda aggregate ---
-    n = len(labels)
-    scores = {lab: 0 for lab in labels}
-    for r in valid:
-        for pos, lab in enumerate(r["ranking"]):
-            if lab in scores:
-                scores[lab] += n - pos
-    consensus = sorted(labels, key=lambda x: -scores[x])
-
-    # --- report ---
-    lines = ["# 多 Judge 共识排序报告", ""]
-    lines.append(f"候选数：{n} ｜ 有效 judge：{len(valid)}/{len(results)}"
-                 f"（配置来源：{src}）")
-    if task and task.strip():
-        lines.append(f"任务背景：{task.strip()}")
-    lines += ["", "## 共识排序（Borda 聚合）", "",
-              "| 名次 | 匿名ID | 得分 | 候选内容 |", "|---|---|---|---|"]
-    for pos, lab in enumerate(consensus):
-        lines.append(f"| {pos + 1} | {lab} | {scores[lab]} | "
-                     f"{label_of[lab]} |")
-
-    lines += ["", "## Judge 一致性（Spearman ρ vs 共识）", "",
-              "| Judge | 模型 | ρ | 原始排序 |", "|---|---|---|---|"]
-    for r in sorted(results, key=lambda x: -(len(x["ranking"]) > 0 and
-                     _spearman(x["ranking"], consensus, labels) or -1)):
-        if r["ranking"]:
-            rho = _spearman(r["ranking"], consensus, labels)
-            order = " > ".join(r["ranking"])
-            lines.append(f"| {r['name']} | {r['model']} | {rho:.3f} | "
-                         f"{order} |")
-        else:
-            lines.append(f"| {r['name']} | {r['model']} | - | "
-                         f"失败：{r['error'][:60]} |")
-
-    skipped = [r for r in results if not r["ranking"]]
-    if skipped:
-        lines += ["", "### 被跳过的 judge（警告）"]
-        for r in skipped:
-            lines.append(f"- {r['name']}：{r['error']}")
-    if len(valid) < 3:
-        lines += ["", "> ⚠️ 有效 judge 不足 3 个，共识质量有限，"
-                     "建议修复失败端点后重跑。"]
-
-    return ToolChunk(
-        state=ToolResultState.SUCCESS,
-        content=[TextBlock(type="text", text="\n".join(lines))],
-    )
