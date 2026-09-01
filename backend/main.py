@@ -57,6 +57,24 @@ class ListwiseRankToolPlugin:
 
         logger.info("Listwise Rank tool plugin registered")
 
+        # First-run initialization hint: probe provider env vars (names
+        # only, never values) and tell the user how to configure judges.
+        try:
+            configured = tool._detect_config()
+            if configured:
+                logger.info(
+                    "Listwise Rank: %d provider key(s) detected (%s); "
+                    "built-in default judges are ready",
+                    len(configured), ", ".join(configured))
+            else:
+                logger.warning(
+                    "Listwise Rank: no LLM provider configured yet. "
+                    "The tool will show a setup wizard on first use — set "
+                    "OPENAI_API_KEY (or any provider key env) / judges_json, "
+                    "see the plugin README 'Initialization' section")
+        except Exception:  # probing must never break registration
+            logger.debug("Listwise Rank: config probe failed", exc_info=True)
+
 
 # QwenPaw 2.1.0 loader contract: the backend entry module must export
 # a module-level ``plugin`` object implementing register(api).
