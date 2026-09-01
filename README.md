@@ -45,6 +45,24 @@ Returns a markdown report: Borda consensus table, per-judge Spearman ρ vs
 consensus, skipped-judge warnings, and a weak-consensus warning when fewer
 than 3 judges are effective.
 
+## Initialization (first run)
+
+After install + restart, the plugin probes provider keys **at registration
+time** (env var names only — values are never logged):
+
+- **Keys found** → log: `Listwise Rank: N provider key(s) detected (...)`,
+  built-in default judges are ready.
+- **No keys** → log warns, and the **first tool call returns a setup wizard**
+  instead of a bare error: quick-start paths, a provider cheat-sheet
+  (OpenAI / DeepSeek / Kimi / 智谱 GLM / 阿里百炼 Qwen / OpenRouter /
+  SiliconFlow / 本地 vLLM·Ollama), and a `judges_json` template for
+  multi-vendor mixing.
+
+**Any OpenAI-compatible provider works** — official APIs or self-hosted
+gateways (vLLM / Ollama / one-api / new-api). Keys live in
+`~/.qwenpaw.secret/envs.json` or process env; restart QwenPaw after editing
+envs.json.
+
 ## Configuration
 
 ### Judges resolution order
@@ -52,7 +70,20 @@ than 3 judges are effective.
 1. Tool argument `judges` (JSON array string) — per-call lineups
 2. Plugin config field `judges_json` (Settings UI) — fixed lineup
 3. `JUDGE_MODELS` env (comma-separated model names on the global gateway)
-4. Built-in defaults (qwen3-14b / deepseek-v3 / gpt-4o on the global gateway)
+4. Built-in defaults — a **cross-family, multi-endpoint lineup** (see below);
+   judges whose endpoint is unset or unreachable are **skipped with a
+   warning** instead of failing the whole run
+
+### Built-in default lineup (v1.1+)
+
+| Judge | Model | Endpoint env | Family |
+|---|---|---|---|
+| `agnes` | `agnes-2.5-flash` | `OPENAI_BASE_URL` + `OPENAI_API_KEY` | Agnes |
+| `qwen35` | `qwen3.5-122b-a10b-fp8` (thinking off) | `NEW_API_URL` + `NEW_API_KEY` | Qwen (vLLM) |
+| `glm` | `glm-5.2` | `SENSENOVA_BASE_URL` + `SENSENOVA_API_KEY` | GLM (Zhipu) |
+
+Zero-config when these env vars exist; any judge with a missing/dead endpoint
+is skipped and reported, so a single expired token no longer breaks consensus.
 
 ### Judge entry fields
 
@@ -60,7 +91,8 @@ than 3 judges are effective.
 {
   "name": "agnes-flash",
   "model": "agnes-2.5-flash",
-  "base_url": "https://your-gateway/v1",     // optional, default $OPENAI_BASE_URL
+  "base_url": "https://your-gateway/v1",     // optional; or base_url_env (env var name)
+  "base_url_env": "OPENAI_BASE_URL",          // optional; falls back to $OPENAI_BASE_URL
   "api_key_env": "OPENAI_API_KEY",            // optional, default OPENAI_API_KEY
   "temperature": 0.2,                         // optional
   "extra_body": {                              // optional, merged into request body
@@ -69,16 +101,25 @@ than 3 judges are effective.
 }
 ```
 
+Endpoint resolution: `base_url` > `base_url_env` > `$OPENAI_BASE_URL`.
+A URL without any path gets `/v1` appended automatically
+(`https://token.sensenova.cn` → `https://token.sensenova.cn/v1`).
+
 `extra_body` adapts gateway-specific params — e.g. vLLM serving heavy-thinking
 models (qwen3.5-122b etc.) burns the whole `max_tokens` budget on reasoning
 unless you disable thinking as shown above.
+
+Judge failures are reported with actionable hints: expired token (401),
+no payment method / out of credits, quota exceeded (429), or model without
+an active channel under the token group (503).
 
 ### Environment variables
 
 | Variable | Required | Notes |
 |---|---|---|
 | `<JUDGE>_API_KEY` | per judge | the variable named by each judge's `api_key_env` |
-| `OPENAI_BASE_URL` | optional | fallback gateway when a judge has no `base_url` |
+| `<JUDGE>_BASE_URL` / `_URL` | optional | per-judge gateway, referenced by `base_url_env` (built-in lineup uses `NEW_API_URL` / `SENSENOVA_BASE_URL` / `OPENAI_BASE_URL`) |
+| `OPENAI_BASE_URL` | optional | fallback gateway when a judge has no `base_url`/`base_url_env` |
 | `JUDGE_MODELS` | optional | quick lineup without JSON: `m1,m2,m3` |
 
 Keys can live in QwenPaw's secret store (`~/.qwenpaw.secret/envs.json`) or in
@@ -143,6 +184,31 @@ Additional hardening tips:
 | qwen-122b   | 1.000 | A > C > B |
 | sensenova-ds| 1.000 | A > C > B |
 ```
+
+## Changelog
+
+### v1.1.0 (2026-09-01)
+
+- **New built-in default lineup**: cross-family judges across three endpoints
+  (`OPENAI_BASE_URL` / `NEW_API_URL` / `SENSENOVA_BASE_URL`), all referenced
+  by env-var names — no hardcoded URLs. A dead gateway is now skipped with a
+  warning instead of failing the whole consensus run.
+- **`base_url_env` judge field**: pin each judge's gateway via an env var.
+- **Auto `/v1`**: base URLs without a path get `/v1` appended
+  (fixes the SenseNova `404` gotcha).
+- **Actionable judge error hints**: expired token (401), missing payment /
+  credits, quota exceeded (429), model without an active channel (503) —
+  each reports what to do instead of a bare `HTTP Error`.
+- **First-run initialization**: registration-time provider probe (log hint)
+  plus a setup wizard returned on first use when no provider is configured;
+  cheat-sheet covers any OpenAI-compatible provider (official APIs or local
+  vLLM/Ollama gateways).
+- README: default-lineup table, troubleshooting hints, env-var docs.
+
+### v1.0.0
+
+- Initial release: anonymized listwise ranking, Borda aggregation, Spearman
+  consistency report, seeded shuffle, per-judge skip warnings.
 
 ## License
 
