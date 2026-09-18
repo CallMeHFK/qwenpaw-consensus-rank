@@ -1,6 +1,7 @@
 # qwenpaw-consensus-rank
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![CI](https://github.com/CallMeHFK/qwenpaw-consensus-rank/actions/workflows/ci.yml/badge.svg)](https://github.com/CallMeHFK/qwenpaw-consensus-rank/actions/workflows/ci.yml)
 [![QwenPaw](https://img.shields.io/badge/QwenPaw-%3E%3D1.1.6-green)](https://github.com/agentscope-ai/QwenPaw)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
 
@@ -149,6 +150,16 @@ regular environment variables.
 
 No extra pip dependencies — stdlib only (`urllib`).
 
+## Development
+
+Stdlib-only test suite — no `agentscope` / `qwenpaw` install required:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+CI runs the suite on Python 3.10–3.12 via GitHub Actions (`.github/workflows/ci.yml`).
+
 ## Privacy ⚠️
 
 Candidate texts and the `task` background are sent to **every configured
@@ -186,6 +197,31 @@ Additional hardening tips:
 ```
 
 ## Changelog
+
+### v1.2.0 (2026-09-18)
+
+- **Per-judge `temperature` honored**: the field was documented but the
+  implementation ignored it; judge-level values now override the global
+  setting (`0` is respected).
+- **Robust ranking parsing**: lowercase chains (`a>b>c`), JSON
+  `{"ranking": "A>B>C"}` string form, and numbered lists with lowercase
+  labels now parse; hallucinated labels outside the candidate set are
+  filtered out; strict `A>B>C` chains are matched before the loose
+  single-letter scan so prose can't leak into rankings.
+- **Partial-ranking transparency**: judges that missed candidates are
+  flagged in the report with the missing labels (their partial votes still
+  count toward Borda).
+- **Actionable network errors**: unreachable endpoints (connection refused /
+  DNS) and read timeouts now get dedicated hints instead of raw tracebacks.
+- **Security warnings in the report**: plaintext `http://` endpoints
+  (non-local) and inline `api_key` fields (ignored by design) are flagged;
+  `base_url` without a scheme fails fast with a clear message.
+- **Tie markers** in the consensus table when adjacent Borda scores are
+  equal; judge consistency table sorted correctly for ρ = 0.0 (previously
+  conflated with failed judges).
+- **Test suite** (`tests/`, 50+ cases, stdlib only) plus GitHub Actions CI
+  on Python 3.10–3.12; plugin config source is now labeled correctly
+  (`plugin-config` vs `inline-arg`) in the report.
 
 ### v1.1.0 (2026-09-01)
 

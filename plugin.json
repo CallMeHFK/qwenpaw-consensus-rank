@@ -1,7 +1,7 @@
 {
   "id": "listwise-rank",
   "name": "Listwise Rank Tool",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Multi-judge consensus ranking: cross-family LLM judges independently rank candidates (anonymized), Borda-aggregated into a consensus with Spearman consistency report",
   "description_i18n": {
     "zh-CN": "多 Judge 共识排序：跨家族大模型对匿名候选独立全排序，Borda 聚合共识并给出 Spearman 一致性报告，消除单一模型偏好",

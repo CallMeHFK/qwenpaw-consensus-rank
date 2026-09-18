@@ -35,9 +35,22 @@ import urllib.error
 import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
 
-from agentscope.message import TextBlock
-from agentscope.message import ToolResultState
-from agentscope.tool import ToolChunk
+try:  # full QwenPaw runtime
+    from agentscope.message import TextBlock
+    from agentscope.message import ToolResultState
+    from agentscope.tool import ToolChunk
+except ImportError:  # standalone runs (unit tests) — minimal stand-ins
+    class ToolResultState:  # type: ignore
+        ERROR = "error"
+        SUCCESS = "success"
+
+    def TextBlock(**kwargs):  # type: ignore
+        return dict(kwargs)
+
+    class ToolChunk:  # type: ignore
+        def __init__(self, state=None, content=None):
+            self.state = state
+            self.content = content
 
 logger = logging.getLogger(__name__)
 
@@ -157,13 +170,17 @@ def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", str(s or "").strip().lstrip("-*·").strip())
 
 
-def _parse_judges(raw: str) -> Tuple[List[Dict[str, Any]], str]:
+def _parse_judges(raw: str, src: str = "inline-arg") -> Tuple[List[Dict[str, Any]], str]:
     """Parse a judges JSON string -> (judges, source_label)."""
     data = json.loads(raw)
     judges = data.get("judges", data) if isinstance(data, dict) else data
     if not isinstance(judges, list) or not judges:
         raise ValueError("judges must be a non-empty JSON array")
-    return judges, "inline-arg"
+    for i, j in enumerate(judges):
+        if not isinstance(j, dict) or not str(j.get("model") or "").strip():
+            raise ValueError(
+                f"judge #{i + 1} is missing the required field 'model'")
+    return judges, src
 
 
 def _resolve_judges(
@@ -176,7 +193,7 @@ def _resolve_judges(
 
     cfg_json = str(tool_cfg.get("judges_json", "") or "").strip()
     if cfg_json:
-        return _parse_judges(cfg_json)
+        return _parse_judges(cfg_json, "plugin-config")
 
     env_models = os.environ.get("JUDGE_MODELS", "").strip()
     if env_models:
@@ -210,11 +227,36 @@ def _normalize_base_url(base: str) -> str:
     return base
 
 
-def _resolve_endpoint(judge: Dict[str, Any]) -> Tuple[str, str]:
-    base = str(judge.get("base_url")
+def _resolve_base(judge: Dict[str, Any]) -> str:
+    return str(judge.get("base_url")
                or os.environ.get(str(judge.get("base_url_env") or ""), "")
                or os.environ.get("OPENAI_BASE_URL", ""))
-    base = _normalize_base_url(base)
+
+
+_LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+
+
+def _config_warnings(judge: Dict[str, Any]) -> List[str]:
+    """Non-fatal config issues to surface in the report."""
+    warns: List[str] = []
+    if "api_key" in judge:
+        warns.append("内联 api_key 出于安全考虑被忽略；"
+                     "请改用 api_key_env 引用环境变量")
+    base = _resolve_base(judge)
+    if base.startswith("http://"):
+        host = (base.split("://", 1)[1].split("/", 1)[0]
+                .split(":", 1)[0].lower())
+        if host not in _LOCAL_HOSTS:
+            warns.append("端点为明文 http://，候选文本将未加密传输"
+                         "（内网网关请自行评估）；建议改用 https://")
+    return warns
+
+
+def _resolve_endpoint(judge: Dict[str, Any]) -> Tuple[str, str]:
+    base = _normalize_base_url(_resolve_base(judge))
+    if base and not base.startswith(("http://", "https://")):
+        raise RuntimeError(
+            f"base_url 缺少协议前缀（需 http:// 或 https://）: {base}")
     key = os.environ.get(
         str(judge.get("api_key_env") or "OPENAI_API_KEY"), "").strip()
     return base, key
@@ -261,6 +303,9 @@ def _call_judge(
         raise RuntimeError(
             f"missing endpoint/key (base_url={'set' if base else 'unset'}, "
             f"key_env={judge.get('api_key_env', 'OPENAI_API_KEY')})")
+    judge_temp = judge.get("temperature")  # per-judge override (0 is valid)
+    if judge_temp is not None:
+        temperature = float(judge_temp)
     body: Dict[str, Any] = {
         "model": judge["model"],
         "messages": [{"role": "user", "content": prompt}],
@@ -281,10 +326,18 @@ def _call_judge(
             data = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         try:
-            body = e.read().decode("utf-8", "ignore")
+            err_body = e.read().decode("utf-8", "ignore")
         except Exception:
-            body = ""
-        raise RuntimeError(_explain_http_error(e.code, body)) from None
+            err_body = ""
+        raise RuntimeError(_explain_http_error(e.code, err_body)) from None
+    except TimeoutError:
+        raise RuntimeError(
+            f"judge timed out after {timeout:g}s; increase 'timeout' in "
+            "plugin settings or pick a faster judge") from None
+    except urllib.error.URLError as e:
+        raise RuntimeError(
+            f"endpoint unreachable ({getattr(e, 'reason', e)}); check "
+            "base_url / network / TLS") from None
     ch = (data.get("choices") or [{}])[0]
     msg = ch.get("message") or {}
     content = (msg.get("content") or "").strip()
@@ -305,15 +358,25 @@ def _parse_ranking(raw: str) -> List[str]:
         if isinstance(data, list):
             return [str(x).strip().upper() for x in data]
         if isinstance(data, dict) and "ranking" in data:
-            return [str(x).strip().upper() for x in data["ranking"]]
+            ranked = data["ranking"]
+            if isinstance(ranked, str):  # {"ranking": "A>B>C"}
+                return _parse_ranking(ranked)
+            return [str(x).strip().upper() for x in ranked]
     except Exception:
         pass
-    items = re.findall(r"\b([A-Z])\b", raw)
-    if not items:
-        numbered = re.findall(r"^\s*(\d+)[.):]\s*([A-Z])", raw, re.M)
-        items = [x[1] for x in sorted(numbered, key=lambda t: int(t[0]))]
+    # Strict chain first ("A > B > C"; lower case tolerated) so that stray
+    # single letters in surrounding prose never leak into the ranking.
+    chain = re.search(r"\b[A-Za-z](?:\s*>\s*[A-Za-z])+\b", raw)
+    if chain:
+        items = re.findall(r"[A-Za-z]", chain.group(0))
+    else:
+        items = re.findall(r"\b([A-Z])\b", raw)
+        if not items:
+            numbered = re.findall(r"^\s*(\d+)[.):]\s*([A-Za-z])", raw, re.M)
+            items = [x[1] for x in sorted(numbered, key=lambda t: int(t[0]))]
     seen: List[str] = []
     for it in items:
+        it = it.upper()
         if it not in seen:
             seen.append(it)
     return seen
@@ -326,7 +389,7 @@ def _spearman(ranking: List[str], consensus: List[str],
     n = len(all_ids)
     if n < 2:
         return 0.0
-    avg = (n - 1) / 2.0
+    avg = (n - 1) / 2.0  # unranked candidates take the median rank
     d2 = sum((r1.get(x, avg) - r2.get(x, avg)) ** 2 for x in all_ids)
     return 1 - 6 * d2 / (n * (n * n - 1))
 
@@ -377,6 +440,8 @@ async def _run(
     tool_cfg = _load_plugin_config("rank_candidates_listwise")
 
     # --- normalize + dedupe ---
+    if isinstance(candidates, str):  # tolerate newline-joined string input
+        candidates = [ln for ln in candidates.splitlines() if ln.strip()]
     seen_set = set()
     uniq: List[str] = []
     for c in candidates or []:
@@ -435,20 +500,25 @@ async def _run(
     max_tokens = int(tool_cfg.get("max_tokens", 4096) or 4096)
 
     # --- call judges concurrently ---
+    label_set = set(labels)
+
     async def one(judge: Dict[str, Any], k: int) -> Dict[str, Any]:
         name = str(judge.get("name") or f"m{k}")
+        warns = _config_warnings(judge)
         try:
             raw = await asyncio.to_thread(
                 _call_judge, judge, prompt, temperature, timeout, max_tokens)
-            ranking = _parse_ranking(raw)
+            ranking = [x for x in _parse_ranking(raw) if x in label_set]
             missing = [x for x in labels if x not in ranking]
             if len(ranking) < 2:
                 raise RuntimeError(f"unparseable ranking: {raw[:80]!r}")
             return {"name": name, "model": judge.get("model", ""),
-                    "ranking": ranking, "missing": missing, "error": ""}
+                    "ranking": ranking, "missing": missing,
+                    "warnings": warns, "error": ""}
         except Exception as e:
             return {"name": name, "model": judge.get("model", ""),
-                    "ranking": [], "missing": labels, "error": str(e)}
+                    "ranking": [], "missing": labels,
+                    "warnings": warns, "error": str(e)}
 
     results = list(await asyncio.gather(
         *[one(j, k) for k, j in enumerate(judges)]))
@@ -488,23 +558,39 @@ async def _run(
         lines.append(f"任务背景：{task.strip()}")
     lines += ["", "## 共识排序（Borda 聚合）", "",
               "| 名次 | 匿名ID | 得分 | 候选内容 |", "|---|---|---|---|"]
+    prev_score: Optional[int] = None
     for pos, lab in enumerate(consensus):
-        lines.append(f"| {pos + 1} | {lab} | {scores[lab]} | "
+        tie = "（并列）" if scores[lab] == prev_score else ""
+        prev_score = scores[lab]
+        lines.append(f"| {pos + 1}{tie} | {lab} | {scores[lab]} | "
                      f"{label_of[lab]} |")
 
+    for r in results:
+        r["rho"] = (_spearman(r["ranking"], consensus, labels)
+                    if r["ranking"] else None)
     lines += ["", "## Judge 一致性（Spearman ρ vs 共识）", "",
               "| Judge | 模型 | ρ | 原始排序 |", "|---|---|---|---|"]
-    for r in sorted(results, key=lambda x: -(len(x["ranking"]) > 0 and
-                     _spearman(x["ranking"], consensus, labels) or -1)):
-        if r["ranking"]:
-            rho = _spearman(r["ranking"], consensus, labels)
+    for r in sorted(results, key=lambda x: (x["rho"] is None,
+                                            -(x["rho"] or 0.0))):
+        if r["rho"] is not None:
             order = " > ".join(r["ranking"])
-            lines.append(f"| {r['name']} | {r['model']} | {rho:.3f} | "
+            lines.append(f"| {r['name']} | {r['model']} | {r['rho']:.3f} | "
                          f"{order} |")
         else:
             lines.append(f"| {r['name']} | {r['model']} | - | "
                          f"失败：{r['error'][:60]} |")
 
+    warn_lines: List[str] = []
+    for r in results:
+        for w in r.get("warnings", []):
+            warn_lines.append(f"- **{r['name']}**：{w}")
+    for r in valid:
+        if r["missing"]:
+            warn_lines.append(
+                f"- **{r['name']}**：排名不完整，缺少 "
+                f"{'、'.join(r['missing'])} 的位次（部分排名仍计入 Borda）")
+    if warn_lines:
+        lines += ["", "### 配置与完整性警告"] + warn_lines
     skipped = [r for r in results if not r["ranking"]]
     if skipped:
         lines += ["", "### 被跳过的 judge（警告）"]
