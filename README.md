@@ -6,8 +6,9 @@
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
 
 QwenPaw tool plugin: **multi-judge consensus ranking** — cross-family LLM judges
-independently rank anonymized candidates; results are Borda-aggregated into a
-consensus with a Spearman consistency report, avoiding single-model bias.
+independently rank anonymized candidates; the complete ballots are averaged by
+rank into a consensus with a Spearman consistency report, avoiding single-model
+bias.
 
 Methodology from the Co-ReAct paper (arXiv:2605.23590) "listwise rank" block:
 a blind user-head proposes ideas, then N judges rank all of them in one pass
@@ -17,19 +18,34 @@ judging alone has no yardstick when user claims are unverifiable.
 ## How it works
 
 ```
-candidates ──► normalize/dedupe ──► anonymize (seeded shuffle → A/B/C...)
+candidates ──► normalize/dedupe ──► anonymize (its OWN seeded A/B/C map per judge)
                                         │
               ┌─────────────────────────┘
               ▼
    N cross-family judges ──► each returns a full ranking (A>B>C...)
               │                 (concurrent, failures skipped w/ warnings)
               ▼
-        Borda aggregation ──► consensus ranking + per-judge Spearman ρ
+      rank averaging ──► consensus + per-judge Spearman ρ + judge↔judge ρ
+     (complete ballots only)
 ```
 
 Why multiple judges? A single model has systematic tastes (prefers longer
 answers, certain phrasings). Cross-family voting + anonymization cancels that
-bias — that's the point of configuring judges from different model families.
+bias — but only the *independent* part of it, so this plugin is strict about
+what counts as independent:
+
+- **Each judge gets its own candidate→label mapping.** With one shared map, the
+  taste for early/late letters is common-mode and survives aggregation: N
+  judges would vote as one. The report prints the seed; `seed=0` draws a fresh
+  one per run.
+- **Same endpoint + same model = one vote.** Clones of a gateway are N copies
+  of one opinion; extras are merged and named in the warnings.
+- **Only complete ballots are averaged.** A judge that ranked 3 of 10
+  candidates implicitly claimed "best of ten" over candidates it never faced;
+  its ballot keeps its own ρ row but does not decide the consensus.
+- **Candidate text is inert data.** Instructions inside a candidate are not
+  followed, and the parser prefers the chain covering every label, so a
+  candidate quoting `A > B > C` cannot outrank the judge's real answer.
 
 ## Tool signature
 
@@ -37,14 +53,17 @@ bias — that's the point of configuring judges from different model families.
 
 | Arg | Notes |
 |---|---|
-| `candidates` | 2–26 plain strings |
-| `task` | optional task background so judges rank "for this task" (reduces refusals) |
+| `candidates` | 2–26 plain strings; clipped to 600 chars per candidate for the judges |
+| `task` | the ranking criterion — with it judges rank by task fit **only**, without them by generic engineering quality. Pass it whenever a task exists |
 | `judges` | optional JSON array override of judge configs (see below) |
-| `seed` | anonymization shuffle seed for reproducibility (default 42, 0 = random) |
+| `seed` | seed for the per-judge anonymization maps (default 42, 0 = fresh random map per run; the value used is printed in the report) |
 
-Returns a markdown report: Borda consensus table, per-judge Spearman ρ vs
-consensus, skipped-judge warnings, and a weak-consensus warning when fewer
-than 3 judges are effective.
+Returns a markdown report: mean-rank consensus table, per-judge Spearman ρ vs
+the consensus, judge↔judge ρ (agreement that does not depend on the consensus
+the judges themselves created), integrity warnings (merged duplicate judges,
+incomplete ballots), skipped-judge warnings, and a banner when fewer than 3
+independent complete ballots were averaged (with 1 ballot it says plainly that
+the result is one model's opinion, not a consensus).
 
 ## Initialization (first run)
 
@@ -109,6 +128,22 @@ A URL without any path gets `/v1` appended automatically
 `extra_body` adapts gateway-specific params — e.g. vLLM serving heavy-thinking
 models (qwen3.5-122b etc.) burns the whole `max_tokens` budget on reasoning
 unless you disable thinking as shown above.
+
+It is also how you constrain the output shape on gateways that support it,
+which is the most reliable way to kill ranking-parse errors:
+
+```json
+"extra_body": {"response_format": {"type": "json_object"}}      // OpenAI-style
+"extra_body": {"guided_json": {...}}                             // vLLM-style
+```
+
+The parser already accepts `{"ranking": "A>B>C"}`, a JSON array, a plain
+`A>B>C` chain and numbered lists, and it prefers whichever chain covers every
+label — but a schema-constrained judge cannot drift at all.
+
+**Duplicate judges are merged.** Two entries resolving to the same
+`base_url` + `model` are one opinion, so they get one vote; the dropped name is
+named in the report warnings. Configure genuinely different families.
 
 Judge failures are reported with actionable hints: expired token (401),
 no payment method / out of credits, quota exceeded (429), or model without
@@ -176,27 +211,103 @@ Additional hardening tips:
   or error messages.
 - The tool performs no telemetry and writes no files; the only network
   traffic is the judge calls themselves.
+- Candidates are fenced and treated as inert data (instructions inside them
+  are not followed), but that is a *correctness* guard, not a confidentiality
+  one: text from an untrusted source still leaves the machine and lands in a
+  third-party model's context.
 
 ## Example output
 
+Real report produced by the current code (one judge returned a partial ballot):
+
 ```markdown
 # 多 Judge 共识排序报告
-候选数：3 ｜ 有效 judge：3/3
+
+候选数：3 ｜ 有效 judge：3/3（完整票 2/3，配置来源：inline-arg）
+匿名映射种子：42 ｜ 每个 judge 一份独立映射
 任务背景：10 人团队、日活 5 万的电商系统架构选型
 
-## 共识排序（Borda 聚合）
-| 名次 | 匿名ID | 得分 | 候选内容 |
-| 1 | A | 9 | 模块化单体：单进程 + 清晰模块边界 |
-| 2 | C | 6 | 服务化中间态：3 个粗粒度服务 |
-| 3 | B | 3 | 微服务拆分：按业务域拆成 8 个服务 |
+## 共识排序（平均名次）
+
+| 名次 | 候选 | 平均名次 | 候选内容 |
+|---|---|---|---|
+| 1 | #3 | 1.00 | 模块化单体：单进程 + 清晰模块边界 |
+| 2（并列） | #1 | 2.50 | 微服务拆分：按业务域拆成 8 个服务 |
+| 3（并列） | #2 | 2.50 | 服务化中间态：3 个粗粒度服务 |
 
 ## Judge 一致性（Spearman ρ vs 共识）
-| agnes-flash | 1.000 | A > C > B |
-| qwen-122b   | 1.000 | A > C > B |
-| sensenova-ds| 1.000 | A > C > B |
+
+| Judge | 模型 | ρ | 原始排序 |
+|---|---|---|---|
+| qwen35 | qwen3.5-122b | 1.000 | #3 > #1 > #2 |
+| agnes | agnes-2.5-flash | 0.500 | #3 > #2 > #1 |
+| glm | glm-5.2 | 0.500 | #3 > #2 |
+
+Judge 间一致度（两两 ρ 均值，不受共识循环影响）：0.500
+
+### 配置与完整性警告
+- **glm**：排名不完整，缺少 #1 的位次（未计入共识，仅单列其 ρ 供参考）
+
+> ⚠️ 有效 judge 不足 3 个，共识质量有限，建议修复失败端点后重跑。
 ```
 
+How to read it:
+
+- `#N` refers to the N-th item of your input `candidates` list — each judge saw
+  its own letters, so `#N` is the only stable identity across ballots.
+- **平均名次** is the mean rank over complete ballots only (1.00 = everyone
+  agreed it is first). Equal values are marked 并列 on every tied row.
+- Per-judge **ρ vs 共识** is circular by construction (the judge helped create
+  the consensus). Use **Judge 间一致度** to ask "did the models agree at all";
+  low mean-rank spread with high inter-judge ρ is the signal you want. High
+  repeatability is not correctness — it says the judges agree, not that the
+  winner is right.
+
 ## Changelog
+
+### v1.3.0 (2026-09-20)
+
+Consensus math and judge-independence fixes, from auditing this plugin
+against a documented LLM failure-mode list (TypeSafe *Jev 1.13 jaggedness*:
+literal reading, indirection, contradictory criteria, presumed structural
+invariance, generation, adversarial content).
+
+- **Every judge now gets its own candidate→label mapping.** The old single
+  seeded shuffle meant all N judges saw the identical letters, so listwise
+  position bias was common-mode and rank aggregation could not cancel it —
+  the exact bias the multi-judge design exists to remove.
+- **Aggregation changed from Borda sum to mean rank over complete ballots.**
+  A judge that returned 2 of 10 candidates used to be credited with "these two
+  are the top of ten" at full strength and could single-handedly decide the
+  winner (reproduced: 26 points vs 20 for the unanimous first choice). Such a
+  ballot is now reported with its own ρ but excluded from the consensus; with
+  no complete ballot at all the result is still produced and flagged 无完整票.
+- **Spearman is tie-safe now.** `1 - 6Σd²/(n(n²-1))` is only valid for
+  complete tie-free permutations; it is replaced by Pearson-on-ranks, so
+  partial ballots no longer get an inflated-looking ρ against the consensus.
+- **Added `Judge 间一致度`** (mean pairwise ρ). ρ-vs-consensus is circular —
+  every judge helps build the number it is scored against — so this is the
+  independence-aware agreement reading.
+- **Duplicate judges are merged into one vote** when two entries resolve to the
+  same endpoint + model, instead of pretending to be a cross-family consensus.
+- **One criterion per call**: with `task` set, judges rank by task fit only;
+  the old prompt asked for task fit *and* general engineering quality at once
+  and left each judge to pick. Direction, completeness and the "candidate text
+  is data, not instructions" rule are stated once, explicitly.
+- **Injection hardening**: candidate text is fenced in the prompt and declared
+  inert; the ranking parser prefers the chain that covers every label (so a
+  candidate quoting `A > B > C` can't outrank the judge's real answer); `|` is
+  escaped in report table cells.
+- **600-character budget per candidate** in both the prompt and the report.
+- **Report readability**: ties marked on every tied row, `#N` input-index
+  column instead of a per-judge letter, effective seed printed, and a banner
+  when only one independent ballot survives ("不构成共识").
+- **Test suite: 52 → 81 cases** (per-judge mapping bijections, ballot
+  imputation, consensus ordering, prompt criteria, parser decoy chains, table
+  escaping, duplicate-judge collapsing, clipping).
+
+> Report format changed (`匿名ID`/`得分` columns are gone). No configuration
+> migration is needed.
 
 ### v1.2.0 (2026-09-18)
 

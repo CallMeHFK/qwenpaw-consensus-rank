@@ -3,8 +3,9 @@
 
 Registers the ``rank_candidates_listwise`` tool into the agent toolkit.
 Implements the listwise-rank-eval skill methodology: anonymized
-listwise ranking by multiple cross-family LLM judges + Borda
-aggregation + Spearman consistency report.
+listwise ranking by multiple cross-family LLM judges (each judge gets
+its own candidate-to-letter mapping) + rank averaging + Spearman
+consistency report.
 """
 
 import importlib.util
@@ -47,9 +48,11 @@ class ListwiseRankToolPlugin:
             description=(
                 "Rank candidates via multi-judge consensus: cross-family "
                 "LLM judges independently rank anonymized candidates "
-                "(A/B/C...), Borda-aggregated into a consensus with a "
-                "Spearman consistency report. Use for option selection, "
-                "RAG re-ranking, data labeling de-biasing."
+                "(each judge gets its own A/B/C... mapping), rank-averaged "
+                "into a consensus with a Spearman consistency report. Use "
+                "for option selection, RAG re-ranking, data labeling "
+                "de-biasing. Always pass `task` — it is the ranking "
+                "criterion; without it judges fall back to generic quality."
             ),
             icon="📊",
             tool_type="network",

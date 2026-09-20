@@ -1,11 +1,11 @@
 {
   "id": "listwise-rank",
   "name": "Listwise Rank Tool",
-  "version": "1.2.0",
-  "description": "Multi-judge consensus ranking: cross-family LLM judges independently rank candidates (anonymized), Borda-aggregated into a consensus with Spearman consistency report",
+  "version": "1.3.0",
+  "description": "Multi-judge consensus ranking: cross-family LLM judges independently rank candidates (each on its own anonymized labels), rank-averaged into a consensus with Spearman consistency report",
   "description_i18n": {
-    "zh-CN": "多 Judge 共识排序：跨家族大模型对匿名候选独立全排序，Borda 聚合共识并给出 Spearman 一致性报告，消除单一模型偏好",
-    "en-US": "Multi-judge consensus ranking with anonymization, Borda aggregation and Spearman consistency report"
+    "zh-CN": "多 Judge 共识排序：跨家族大模型对匿名候选独立全排序（每个 judge 一套独立编号映射），名次平均得到共识并给出 Spearman 一致性报告，消除单一模型偏好",
+    "en-US": "Multi-judge consensus ranking with per-judge anonymization, rank averaging and Spearman consistency report"
   },
   "author": "leo",
   "entry": {
@@ -20,7 +20,7 @@
     "tools": [
       {
         "name": "rank_candidates_listwise",
-        "description": "Rank candidates via multi-judge consensus (cross-family LLMs, anonymized listwise ranking, Borda aggregation, Spearman report)",
+        "description": "Rank candidates via multi-judge consensus (cross-family LLMs, per-judge anonymized listwise ranking, rank averaging, Spearman report)",
         "icon": "📊",
         "requires_config": false,
         "config_fields": [
@@ -30,7 +30,7 @@
             "type": "text",
             "required": false,
             "placeholder": "[{\"name\":\"agnes\",\"model\":\"agnes-2.5-flash\",\"base_url_env\":\"OPENAI_BASE_URL\",\"api_key_env\":\"OPENAI_API_KEY\"}]",
-            "help": "Each judge: name/model required; endpoint = base_url or base_url_env (falls back to OPENAI_BASE_URL); missing /v1 suffix is auto-appended; api_key_env default OPENAI_API_KEY; optional temperature/extra_body. Empty = use JUDGE_MODELS env or built-in cross-endpoint defaults (dead endpoints are skipped with a warning)"
+            "help": "Each judge: name/model required; endpoint = base_url or base_url_env (falls back to OPENAI_BASE_URL); missing /v1 suffix is auto-appended; api_key_env default OPENAI_API_KEY; optional temperature/extra_body (use extra_body for a gateway's response_format / guided_json to constrain output). Entries resolving to the same endpoint+model are merged into one vote. Empty = use JUDGE_MODELS env or built-in cross-endpoint defaults (dead endpoints are skipped with a warning)"
           },
           {
             "name": "temperature",
