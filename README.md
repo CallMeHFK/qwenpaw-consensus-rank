@@ -205,9 +205,20 @@ run against a live install; `plugins/registry.py:1061`, `app/routers/tools.py:34
    **per agent** — set it once per agent you use.
 3. Precedence: tool config > env var > default.
 
-If the settings form shows no `passes` field, the running process still holds an
-older `plugin.json` (fields come from the manifest at registration time) — restart
-once; route 1 works regardless.
+If the settings form shows no `passes` field, check what the running app can see
+— the form is generated from the manifest on disk:
+```bash
+curl -s http://127.0.0.1:19999/api/tools | python3 -c "
+import json,sys; t=[x for x in json.load(sys.stdin)
+                    if x['name']=='rank_candidates_listwise'][0]
+print([f['name'] for f in (t.get('config_fields') or [])])"
+# expect: ['judges_json', 'temperature', 'timeout', 'passes', 'max_tokens']
+```
+An old list means the install directory still holds an old `plugin.json`. Whether
+that build renders plugin tool config in the UI at all varies; route 1 works either
+way. To confirm the running **code** version, look at the report header a call
+returns: v1.3+ prints `候选数：N ｜ 有效 judge：x/y（完整票 …）` and
+`匿名映射种子：…`; older builds print a plain `共识排序（Borda 聚合）` table.
 
 Note on `plugin.json`: `meta.tools[].config_fields` declares the form; a build that
 renders it will show these fields after a restart (the manifest is read at registration).
