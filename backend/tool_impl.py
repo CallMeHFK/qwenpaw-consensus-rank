@@ -310,8 +310,13 @@ def _config_warnings(judge: Dict[str, Any]) -> List[str]:
 def _resolve_endpoint(judge: Dict[str, Any]) -> Tuple[str, str]:
     base = _normalize_base_url(_resolve_base(judge))
     if base and not base.startswith(("http://", "https://")):
+        if base.startswith("ENC:"):
+            # envs.json values are decrypted by the QwenPaw runtime only
+            raise RuntimeError(
+                "base_url 取到的是 QwenPaw 密文（ENC:...）：该配置文件只在 "
+                "QwenPaw 进程内解密，本工具需在 QwenPaw 里运行")
         raise RuntimeError(
-            f"base_url 缺少协议前缀（需 http:// 或 https://）: {base}")
+            f"base_url 缺少协议前缀（需 http:// 或 https://）: {base[:40]}")
     key = os.environ.get(
         str(judge.get("api_key_env") or "OPENAI_API_KEY"), "").strip()
     return base, key
@@ -699,8 +704,7 @@ async def _run(
         warns = _config_warnings(judge)
         ballots: List[List[float]] = []
         orders: List[List[int]] = []
-        missing: List[int] = []
-        incomplete = False
+        gaps: List[List[int]] = []
         err = ""
         # Passes run in series per judge: one ballot per judge keeps its vote
         # at full weight, and the spread between its passes is the position
@@ -720,12 +724,24 @@ async def _run(
                     raise RuntimeError(f"unparseable ranking: {raw[:80]!r}")
                 ballots.append(_rank_vector(order, n))
                 orders.append(order)
-                gap = [c for c in range(n) if c not in order]
-                if gap:
-                    incomplete = True
-                    missing = sorted(set(missing) | set(gap))
+                gaps.append([c for c in range(n) if c not in order])
             except Exception as e:
                 err = str(e)
+        # A truncated pass says nothing about the candidates it omitted, but a
+        # sibling pass that covered the whole slate is a real ballot: drop the
+        # bad pass, not the judge.
+        complete_passes = [b for b, g in zip(ballots, gaps) if not g]
+        dropped = [i + 1 for i, g in enumerate(gaps) if g]
+        if complete_passes:
+            if dropped:
+                warns.append(
+                    f"第 {'、'.join(str(d) for d in dropped)} 遍排名不完整，"
+                    "该遍已丢弃，只用完整遍次计入共识")
+            used = complete_passes
+            missing: List[int] = []
+        else:
+            used = ballots
+            missing = sorted({c for g in gaps for c in g})
         base = {"name": name, "model": judge.get("model", ""),
                 "warnings": warns, "passes_ok": len(ballots)}
         if not ballots:
@@ -736,9 +752,8 @@ async def _run(
         return dict(
             base,
             order=orders[0],
-            vote=[sum(b[c] for b in ballots) / len(ballots)
-                  for c in range(n)],
-            missing=missing if incomplete else [],
+            vote=[sum(b[c] for b in used) / len(used) for c in range(n)],
+            missing=missing,
             stability=(sum(_spearman(a, b) for a, b in own) / len(own)
                        if own else None),
             error=err if len(ballots) < passes else "")

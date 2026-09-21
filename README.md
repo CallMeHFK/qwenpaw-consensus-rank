@@ -331,6 +331,24 @@ How to read it:
 
 ## Changelog
 
+### v1.4.2 (2026-09-21)
+
+- **A truncated pass no longer disqualifies the judge's complete passes.**
+  Found by the first live run against real endpoints: `agnes` returned one full
+  ranking and one that dropped a candidate, so the whole judge was excluded;
+  with a second gateway down on 502 the panel was left with a single vote and
+  the consensus (and the leave-one-out check) died with it. Completeness is now
+  judged per pass; the dropped pass is named in the warnings.
+- First real-endpoint validation recorded (3 configured judge endpoints,
+  `passes=2`): the 502 hint, the plaintext-`http://` warning, the actionable
+  skip path, and the new columns all behaved as designed, and both public
+  judges were named as position-driven (intra-judge ρ 0.40 / -0.40) — which is
+  the case `passes` exists to catch.
+- A `base_url` that resolves to a QwenPaw `ENC:` ciphertext now says so (that
+  store is decrypted inside the QwenPaw process only) instead of failing as a
+  malformed URL, and the value is truncated so no secret material lands in the
+  agent-visible report.
+
 ### v1.4.1 (2026-09-21)
 
 - **`冠军判定` line** under the consensus table: leave-one-out over the ballots

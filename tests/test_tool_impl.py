@@ -358,6 +358,18 @@ class CallJudgeTest(unittest.TestCase):
             tool_impl._call_judge(self._judge(base_url="myhost:8000"),
                                   "P", 0.2, 5, 10)
 
+    def test_encrypted_store_value_explains_itself_without_leaking(self):
+        # QwenPaw decrypts envs.json into its own process; a raw ENC: value
+        # means the tool is running outside it. Say so, and do not echo the
+        # ciphertext into an agent-visible report.
+        env = {"OPENAI_BASE_URL": "ENC:gAAAAABqqhMLfJXtSiHYAI48vtzZTp8N"}
+        judge = self._judge(base_url="", base_url_env="ABSENT_ENV")
+        with mock.patch.dict(os.environ, env, clear=False):
+            with self.assertRaises(RuntimeError) as ctx:
+                tool_impl._call_judge(judge, "P", 0.2, 5, 10)
+        self.assertIn("QwenPaw", str(ctx.exception))
+        self.assertNotIn("gAAAAAB", str(ctx.exception))
+
     def test_empty_content(self):
         with mock.patch.dict(os.environ, {"TEST_JUDGE_KEY": "k"}):
             with self._patch_urlopen(
@@ -585,6 +597,31 @@ class StabilityPassesTest(unittest.TestCase):
         # j0's single usable ballot keeps full weight: mean rank 1.67, not the
         # 1.50 a placeholder-padded (diluted) ballot would give
         self.assertIn("| 1 | #1 | 1.67 | x1 |", text)
+
+    def test_complete_pass_still_counts_when_a_sibling_pass_is_partial(self):
+        # live-run finding: one judge returned a full ranking on pass 1 and a
+        # truncated one on pass 2. Dropping the whole judge cost the panel a
+        # vote it had earned - only the bad pass should go.
+        names = ["j1", "j2", "j3"]
+        judges = json.dumps([{"name": n, "model": f"m{i}"}
+                             for i, n in enumerate(names)])
+        answers = {
+            "j1": [_chain(42, "j1", [0, 1, 2], 3),
+                   _chain(42, "j1", [0, 1], 3, p=1)],
+            "j2": [_chain(42, "j2", [0, 1, 2], 3),
+                   _chain(42, "j2", [0, 1, 2], 3, p=1)],
+            "j3": [_chain(42, "j3", [0, 1, 2], 3),
+                   _chain(42, "j3", [0, 1, 2], 3, p=1)],
+        }
+        with self._cfg(passes=2):
+            with _mock_passes(answers):
+                chunk = _run(["x1", "x2", "x3"], judges=judges)
+        text = _text(chunk)
+        self.assertIn("完整票 3/3", text)
+        self.assertIn("| 1 | #1 | 1.00 | x1 |", text)
+        self.assertIn("复算 3/3 次冠军不变", text)
+        self.assertIn("j1", text.split("配置与完整性警告")[1])
+        self.assertIn("该遍已丢弃", text)
 
     def test_passes_are_clamped(self):
         calls = []
