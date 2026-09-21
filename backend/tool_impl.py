@@ -6,7 +6,10 @@ Pipeline (from the listwise-rank-eval skill, Co-ReAct methodology):
 2. Give EVERY judge its own anonymous A/B/C mapping (seeded per judge),
    then collect each judge's full ranking. One shared mapping would make
    listwise position bias common-mode, and voting cannot cancel bias that
-   every ballot shares.
+   every ballot shares. With the ``passes`` plugin setting (1-3) a judge
+   ranks the same slate under that many mappings and its ballots are averaged
+   into its one vote, so its own position taste cancels internally and the
+   spread between passes is reported as 位置稳定性.
 3. Average the ranks of the complete ballots -> consensus (ties break on
    the original candidate order).
 4. Report per-judge Spearman rho vs the consensus plus the mean pairwise
@@ -170,6 +173,8 @@ _PROMPT_TMPL = (
 
 _MAX_CANDIDATES = 26  # A..Z labels
 _MAX_CAND_CHARS = 600  # per candidate: a wall of prose dilutes the comparison
+_MAX_PASSES = 3        # extra rankings of the same slate per judge
+_STABILITY_FLOOR = 0.9  # intra-judge rho below this = position-driven order
 
 
 def _clip(s: str) -> str:
@@ -650,29 +655,57 @@ async def _run(
 
     # --- independent votes only: same endpoint + model is one opinion ---
     judges, merged_dupes = _collapse_duplicate_judges(judges)
+    passes = max(1, min(_MAX_PASSES, int(tool_cfg.get("passes", 1) or 1)))
 
     # --- call judges concurrently, each on its own anonymous mapping ---
     async def one(judge: Dict[str, Any]) -> Dict[str, Any]:
         name = str(judge["name"])
         warns = _config_warnings(judge)
-        mapping = _judge_label_map(n, run_seed, name)
-        try:
-            raw = await asyncio.to_thread(
-                _call_judge, judge, _judge_prompt(uniq, mapping, task),
-                temperature, timeout, max_tokens)
-            order = [mapping[lab] for lab in _parse_ranking(raw, mapping.keys())
-                     if lab in mapping]
-            if len(order) < 2:
-                raise RuntimeError(f"unparseable ranking: {raw[:80]!r}")
-            return {"name": name, "model": judge.get("model", ""),
-                    "order": order, "vote": _rank_vector(order, n),
-                    "missing": [c for c in range(n) if c not in order],
-                    "warnings": warns, "error": ""}
-        except Exception as e:
-            return {"name": name, "model": judge.get("model", ""),
-                    "order": [], "vote": [0.0] * n,
-                    "missing": list(range(n)),
-                    "warnings": warns, "error": str(e)}
+        ballots: List[List[float]] = []
+        orders: List[List[int]] = []
+        missing: List[int] = []
+        incomplete = False
+        err = ""
+        # Passes run in series per judge: one ballot per judge keeps its vote
+        # at full weight, and the spread between its passes is the position
+        # sensitivity we measure. Concurrent passes would also let a single
+        # gateway rate-limit itself.
+        for p in range(passes):
+            key = name if p == 0 else f"{name}#{p}"
+            mapping = _judge_label_map(n, run_seed, key)
+            try:
+                raw = await asyncio.to_thread(
+                    _call_judge, judge, _judge_prompt(uniq, mapping, task),
+                    temperature, timeout, max_tokens)
+                order = [mapping[lab] for lab
+                         in _parse_ranking(raw, mapping.keys())
+                         if lab in mapping]
+                if len(order) < 2:
+                    raise RuntimeError(f"unparseable ranking: {raw[:80]!r}")
+                ballots.append(_rank_vector(order, n))
+                orders.append(order)
+                gap = [c for c in range(n) if c not in order]
+                if gap:
+                    incomplete = True
+                    missing = sorted(set(missing) | set(gap))
+            except Exception as e:
+                err = str(e)
+        base = {"name": name, "model": judge.get("model", ""),
+                "warnings": warns, "passes_ok": len(ballots)}
+        if not ballots:
+            return dict(base, order=[], vote=[0.0] * n,
+                        missing=list(range(n)), stability=None,
+                        error=err or "no usable pass")
+        own = [(a, b) for i, a in enumerate(ballots) for b in ballots[i + 1:]]
+        return dict(
+            base,
+            order=orders[0],
+            vote=[sum(b[c] for b in ballots) / len(ballots)
+                  for c in range(n)],
+            missing=missing if incomplete else [],
+            stability=(sum(_spearman(a, b) for a, b in own) / len(own)
+                       if own else None),
+            error=err if len(ballots) < passes else "")
 
     results = list(await asyncio.gather(*[one(j) for j in judges]))
 
@@ -718,7 +751,8 @@ async def _run(
                  f"（完整票 {len(complete)}/{len(valid)}，配置来源：{src}）")
     lines.append(f"匿名映射种子：{run_seed}"
                  f"{'（本次随机）' if not seed else ''}"
-                 " ｜ 每个 judge 一份独立映射")
+                 f" ｜ 每个 judge 一份独立映射"
+                 f"{'，每 judge ' + str(passes) + ' 遍映射' if passes > 1 else ''}")
     if task and task.strip():
         lines.append(f"任务背景：{task.strip()}")
     lines += ["", "## 共识排序（平均名次）", "",
@@ -728,21 +762,29 @@ async def _run(
         lines.append(f"| {pos + 1}{tie} | #{cid + 1} | "
                      f"{mean_rank[cid] + 1:.2f} | {_md_cell(_clip(uniq[cid]))} |")
 
+    stab_head = "位置稳定性" if passes > 1 else "位置稳定性（未测）"
     lines += ["", "## Judge 一致性（Spearman ρ vs 共识）", "",
-              "| Judge | 模型 | ρ | 原始排序 |", "|---|---|---|---|"]
+              f"| Judge | 模型 | ρ | {stab_head} | 原始排序 |",
+              "|---|---|---|---|---|"]
     for r in sorted(results, key=lambda x: (x["rho"] is None,
                                             -(x["rho"] or 0.0))):
+        stab = (f"{r['stability']:.3f}" if r.get("stability") is not None
+                else "-")
         if r["rho"] is not None:
             order_txt = " > ".join(f"#{c + 1}" for c in r["order"])
             lines.append(f"| {_md_cell(r['name'])} | {_md_cell(r['model'])} "
-                         f"| {r['rho']:.3f} | {order_txt} |")
+                         f"| {r['rho']:.3f} | {stab} | {order_txt} |")
         else:
             lines.append(f"| {_md_cell(r['name'])} | {_md_cell(r['model'])} "
-                         f"| - | 失败：{_md_cell(r['error'][:60])} |")
+                         f"| - | {stab} | 失败：{_md_cell(r['error'][:60])} |")
 
     if agree is not None:
         lines += ["", "Judge 间一致度（两两 ρ 均值，不受共识循环影响）："
                       f"{agree:.3f}"]
+    if passes == 1:
+        lines += ["", "> 位置稳定性未测：在插件设置里把 `passes=2`，让每个 judge "
+                     "在两套匿名映射下各排一次，可得到 judge 内的位置稳定性 ρ，"
+                     "并把该 judge 的位置偏好从它的票里平均掉。"]
 
     warn_lines: List[str] = []
     for dropped, keeper in merged_dupes:
@@ -752,6 +794,17 @@ async def _run(
         for w in r.get("warnings", []):
             warn_lines.append(f"- **{r['name']}**：{w}")
     for r in valid:
+        stab = r.get("stability")
+        if stab is not None and stab < _STABILITY_FLOOR:
+            warn_lines.append(
+                f"- **{r['name']}**：{r['passes_ok']}/{passes} 遍映射给出的排序"
+                f"不一致（位置稳定性 ρ={stab:.3f} < {_STABILITY_FLOOR:g}），"
+                "它的名次可能由标签位置驱动，建议换 judge 或加 passes")
+        elif r["passes_ok"] < passes:
+            warn_lines.append(
+                f"- **{r['name']}**：{r['passes_ok']}/{passes} 遍可用"
+                f"（{r['error'][:60]}），该票仍按可用遍次全额计入，"
+                "无法评估其位置稳定性")
         if r["missing"]:
             labs = "、".join(f"#{c + 1}" for c in r["missing"])
             counted = ("（无完整票可采信，本票仍按插补名次计入）"

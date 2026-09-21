@@ -56,12 +56,31 @@ def _mock_call_judge(ranking_by_name):
     return mock.patch.object(tool_impl, "_call_judge", side_effect=fake)
 
 
-def _chain(seed, judge_name, cand_ids, n):
+def _chain(seed, judge_name, cand_ids, n, p=0):
     """Judge answer text asking for cand_ids (indices into the candidate
-    list) best-first, spelled with THAT judge's own anonymous labels."""
-    mapping = tool_impl._judge_label_map(n, seed, judge_name)
+    list) best-first, spelled with THAT judge's own anonymous labels for
+    pass p (pass 0 keeps the judge's bare name as its mapping key)."""
+    key = judge_name if p == 0 else f"{judge_name}#{p}"
+    mapping = tool_impl._judge_label_map(n, seed, key)
     inv = {c: lab for lab, c in mapping.items()}
     return ">".join(inv[c] for c in cand_ids)
+
+
+def _mock_passes(by_name):
+    """by_name: judge -> per-pass answer texts; an Exception entry fails
+    that pass."""
+    counter = {}
+
+    def fake(judge, prompt, temperature, timeout, max_tokens):
+        name = judge["name"]
+        idx = counter.get(name, 0)
+        counter[name] = idx + 1
+        seq = by_name[name]
+        item = seq[min(idx, len(seq) - 1)]
+        if isinstance(item, Exception):
+            raise item
+        return item
+    return mock.patch.object(tool_impl, "_call_judge", side_effect=fake)
 
 
 class AnonymizationTest(unittest.TestCase):
@@ -425,10 +444,11 @@ class ReportEscapingTest(unittest.TestCase):
                                 '{"name":"j2","model":"m2"}]')
         text = _text(chunk)
         self.assertIn("单体\\|微服务", text)
-        for line in text.splitlines():
-            if line.startswith("| ") and not line.startswith("|---"):
-                # 4 columns -> 5 unescaped separators, escapes don't count
-                self.assertEqual(len(_CELL_PIPES.findall(line)), 5, line)
+        header = next(ln for ln in text.splitlines()
+                      if ln.startswith("| 名次 |"))
+        cols = len(_CELL_PIPES.findall(header))
+        row = next(ln for ln in text.splitlines() if "单体" in ln)
+        self.assertEqual(len(_CELL_PIPES.findall(row)), cols, row)
 
 
 class DuplicateJudgesTest(unittest.TestCase):
@@ -511,6 +531,82 @@ class CandidateBudgetTest(unittest.TestCase):
         text = _text(chunk)
         self.assertIn("…（截断）", text)
         self.assertNotIn("字" * 2000, text)
+
+
+class StabilityPassesTest(unittest.TestCase):
+    """passes>=2: each judge ranks the slate twice under two different
+    anonymizations; its two ballots are averaged into ONE vote, and the
+    spread between them is the measured position sensitivity."""
+
+    JUDGES = json.dumps([{"name": f"j{i}", "model": f"m{i}"}
+                         for i in range(3)])
+
+    def setUp(self):
+        patcher = mock.patch.object(tool_impl, "_load_plugin_config",
+                                    lambda name: {})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _cfg(self, **kw):
+        return mock.patch.object(tool_impl, "_load_plugin_config",
+                                 lambda name: kw)
+
+    def test_two_passes_average_inside_a_single_judge_vote(self):
+        answers = {
+            "j0": [_chain(42, "j0", [0, 1, 2], 3),
+                   _chain(42, "j0", [1, 0, 2], 3, p=1)],
+            "j1": [_chain(42, "j1", [2, 1, 0], 3),
+                   _chain(42, "j1", [2, 1, 0], 3, p=1)],
+            "j2": [_chain(42, "j2", [0, 1, 2], 3),
+                   _chain(42, "j2", [0, 1, 2], 3, p=1)],
+        }
+        with self._cfg(passes=2):
+            with _mock_passes(answers):
+                chunk = _run(["x1", "x2", "x3"], judges=self.JUDGES)
+        text = _text(chunk)
+        self.assertIn("| 1（并列） | #1 | 1.83 | x1 |", text)
+        self.assertIn("| 3 | #3 | 2.33 | x3 |", text)
+        self.assertIn("| j0 | m0 | 0.866 |", text)   # one unstable vote
+        self.assertIn("位置稳定性", text)
+        self.assertIn("**j0**", text)                # named as position-sensitive
+
+    def test_failed_pass_does_not_dilute_the_judges_vote(self):
+        answers = {
+            "j0": [_chain(42, "j0", [2, 1, 0], 3), RuntimeError("boom")],
+            "j1": [_chain(42, "j1", [0, 1, 2], 3),
+                   _chain(42, "j1", [0, 1, 2], 3, p=1)],
+            "j2": [_chain(42, "j2", [0, 1, 2], 3),
+                   _chain(42, "j2", [0, 1, 2], 3, p=1)],
+        }
+        with self._cfg(passes=2):
+            with _mock_passes(answers):
+                chunk = _run(["x1", "x2", "x3"], judges=self.JUDGES)
+        text = _text(chunk)
+        # j0's single usable ballot keeps full weight: mean rank 1.67, not the
+        # 1.50 a placeholder-padded (diluted) ballot would give
+        self.assertIn("| 1 | #1 | 1.67 | x1 |", text)
+
+    def test_passes_are_clamped(self):
+        calls = []
+
+        def fake(judge, prompt, temperature, timeout, max_tokens):
+            calls.append(judge["name"])
+            return _chain(42, judge["name"], [0, 1, 2], 3)
+
+        with self._cfg(passes=99):
+            with mock.patch.object(tool_impl, "_call_judge", side_effect=fake):
+                _run(["x1", "x2", "x3"], judges=self.JUDGES)
+        self.assertEqual(len(calls), 9)  # 3 judges x _MAX_PASSES(3)
+
+    def test_single_pass_says_stability_is_unmeasured(self):
+        answers = {f"j{i}": _chain(42, f"j{i}", [0, 1, 2], 3)
+                   for i in range(3)}
+        with _mock_call_judge(answers):
+            chunk = _run(["x1", "x2", "x3"], judges=self.JUDGES)
+        text = _text(chunk)
+        self.assertIn("位置稳定性未测", text)
+        self.assertIn("passes=2", text)
+        self.assertIn("| 1 | #1 | 1.00 | x1 |", text)  # listwise path unchanged
 
 
 class RunConsensusTest(unittest.TestCase):

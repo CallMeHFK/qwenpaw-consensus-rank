@@ -11,9 +11,19 @@ rank into a consensus with a Spearman consistency report, avoiding single-model
 bias.
 
 Methodology from the Co-ReAct paper (arXiv:2605.23590) "listwise rank" block:
-a blind user-head proposes ideas, then N judges rank all of them in one pass
-(1–100 score + verdict) — single-head head-to-head comparison or quality
-judging alone has no yardstick when user claims are unverifiable.
+a blind user-head proposes ideas, then three judges on separate architectures
+each return **a full ranking of the slate rather than a scalar score**; the
+rankings are vote-aggregated (Borda) into an expert consensus that the agent's
+reward then tracks by Spearman rank correlation.
+
+Two deliberate departures from the paper, both because its own procedure has
+the gaps below:
+
+| 论文做法 | 问题 | 本插件 |
+|---|---|---|
+| 一次共享置换 + 中性标识符"to remove positional bias" | 只消除输入顺序锚定；标签位置偏好仍在 N 张票之间完全共模 | 每个 judge 一套独立映射（+ `passes` 让同一 judge 多套映射自平均） |
+| Borda 直接求和 | 论文未定义残缺票/并列怎么处理；实测一张 2/10 的残缺票能独断冠军 | 只统计完整票，残缺票单列 |
+| 共识即 ground truth | 未度量单个 judge 有多"位置驱动" | `位置稳定性`：judge 内两遍映射的 ρ |
 
 ## How it works
 
@@ -169,6 +179,45 @@ regular environment variables.
 | `temperature` | 0.2 | judge sampling temperature |
 | `timeout` | 180 | per-judge HTTP timeout (seconds) |
 | `max_tokens` | 4096 | per-judge completion budget |
+| `passes` | 1 | 1–3; with ≥2 each judge ranks the same slate under that many independent anonymizations |
+
+### 位置稳定性（`passes` >= 2）
+
+One ballot per judge tells you *what* it ranked first, not how much that order
+depended on which candidate happened to sit under label `A`. With `passes=2`
+every judge ranks the slate twice under two different mappings:
+
+- the judge's **ballot is the average of its own passes**, so its label-position
+  taste cancels inside its own vote instead of relying on other judges to
+  average it out — and the judge still casts exactly one vote (a failed pass
+  does not halve its weight);
+- the report gains a **位置稳定性** column = Spearman ρ between that judge's own
+  passes; below `0.9` the judge is named as possibly position-driven;
+- cost is `judges × passes` calls, and a judge's passes run in series (one
+  gateway never self-rate-limits). Outputs are ~30 tokens each, so the extra
+  spend is essentially the prompt repeated once.
+
+Real tail of a `passes=2` run where the third judge flipped completely:
+
+```markdown
+| Judge | 模型 | ρ | 位置稳定性 | 原始排序 |
+|---|---|---|---|---|
+| agnes | a | 1.000 | 1.000 | #3 > #2 > #1 |
+| qwen35 | b | 1.000 | 1.000 | #3 > #2 > #1 |
+| glm | c | 0.000 | -1.000 | #3 > #2 > #1 |
+
+Judge 间一致度（两两 ρ 均值，不受共识循环影响）：0.333
+
+### 配置与完整性警告
+- **glm**：2/2 遍映射给出的排序不一致（位置稳定性 ρ=-1.000 < 0.9），它的名次可能由标签位置驱动，建议换 judge 或加 passes
+```
+
+Reference point for reading that column: an architectural fix for listwise
+position sensitivity reports τ=0.9883 / ρ=0.9984 across permutations on a
+fine-tuned reranker ([arXiv:2604.27599](https://arxiv.org/abs/2604.27599)).
+A general chat model used as a judge will be worse than that — the value here
+is finding out *which* of your judges is order-driven, which a single-pass
+report cannot show at all.
 
 ## Install
 
@@ -262,8 +311,37 @@ How to read it:
   low mean-rank spread with high inter-judge ρ is the signal you want. High
   repeatability is not correctness — it says the judges agree, not that the
   winner is right.
+- **位置稳定性** (needs `passes` >= 2) is per-judge and consensus-independent:
+  it asks whether that judge's order survives a reshuffle of the anonymization.
+  A judge with ρ=1.000 against the consensus but 0.500 against itself is
+  telling you its ballot is partly label position.
 
 ## Changelog
+
+### v1.4.0 (2026-09-20)
+
+- **`passes` (1–3, default 1): per-judge permutation ensembling.** With
+  `passes>=2` each judge ranks the same slate under several independent
+  anonymizations; its ballots are averaged into that judge's single vote, so
+  its own label-position taste cancels inside its ballot instead of depending
+  on the other judges to average it out. A failed pass does not dilute the
+  judge's weight.
+- **`位置稳定性` column** — Spearman ρ between a judge's own passes, with the
+  judge named in the warnings below 0.9. This is the measurement the source
+  paper does not make: it asserts that one shared permutation "removes
+  positional bias" and that Borda is "robust to a single judge being an
+  outlier", neither of which is checkable from a single-pass report.
+- **Methodology section corrected**: the paper's listwise-rank block has judges
+  return a full ranking and *explicitly not* a scalar score — the README's old
+  "1–100 score + verdict" description was wrong (that belongs to the rubric
+  generator, a different block).
+- Pointwise (one call per candidate) was considered and **rejected**: it drops
+  the joint comparison that makes listwise reranking the stronger paradigm,
+  costs N x M calls, and its uncalibrated absolute grades have to be re-sorted
+  per judge anyway — i.e. it changes which quantity the consensus measures
+  while returning to the same ranking.
+- Tests 83 → 87. Judge table gained a column, so the report shape test now
+  derives the column count from the table header.
 
 ### v1.3.0 (2026-09-20)
 

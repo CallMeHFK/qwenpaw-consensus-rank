@@ -1,8 +1,8 @@
 {
   "id": "listwise-rank",
   "name": "Listwise Rank Tool",
-  "version": "1.3.0",
-  "description": "Multi-judge consensus ranking: cross-family LLM judges independently rank candidates (each on its own anonymized labels), rank-averaged into a consensus with Spearman consistency report",
+  "version": "1.4.0",
+  "description": "Multi-judge consensus ranking: cross-family LLM judges independently rank candidates (each on its own anonymized labels, optionally several passes per judge for position-stability), rank-averaged into a consensus with Spearman consistency report",
   "description_i18n": {
     "zh-CN": "多 Judge 共识排序：跨家族大模型对匿名候选独立全排序（每个 judge 一套独立编号映射），名次平均得到共识并给出 Spearman 一致性报告，消除单一模型偏好",
     "en-US": "Multi-judge consensus ranking with per-judge anonymization, rank averaging and Spearman consistency report"
@@ -51,6 +51,16 @@
             "min": 10,
             "max": 600,
             "help": "HTTP timeout per judge call (default: 180)"
+          },
+          {
+            "name": "passes",
+            "label": "Per-judge Passes (position-stability ensembling)",
+            "type": "number",
+            "required": false,
+            "placeholder": "1",
+            "min": 1,
+            "max": 3,
+            "help": "1 = one ranking per judge (cheapest). 2-3 = the same judge ranks the slate under that many independent anonymizations; its ballots are averaged into one vote and the report gains a per-judge position-stability rho (below 0.9 names the judge as possibly order-driven). Cost is judges x passes calls, run in series per judge. Default 1"
           },
           {
             "name": "max_tokens",
