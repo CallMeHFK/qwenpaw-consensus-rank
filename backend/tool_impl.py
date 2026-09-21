@@ -322,6 +322,23 @@ def _resolve_endpoint(judge: Dict[str, Any]) -> Tuple[str, str]:
     return base, key
 
 
+def _resolve_passes(tool_cfg: Dict[str, Any]) -> int:
+    """How many rankings each judge produces: plugin config > env > 1.
+
+    QwenPaw 2.2.1 exposes per-tool config only over HTTP (there is no settings
+    UI field for it) and reading it needs an agent context, so the env var is
+    the one path that works from a clean install by editing envs.json alone.
+    """
+    raw = tool_cfg.get("passes")
+    if raw is None or str(raw).strip() == "":
+        raw = os.environ.get("LISTWISE_RANK_PASSES", "")
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        value = 1
+    return max(1, min(_MAX_PASSES, value))
+
+
 def _collapse_duplicate_judges(
     judges: List[Dict[str, Any]],
 ) -> Tuple[List[Dict[str, Any]], List[Tuple[str, str]]]:
@@ -696,7 +713,7 @@ async def _run(
 
     # --- independent votes only: same endpoint + model is one opinion ---
     judges, merged_dupes = _collapse_duplicate_judges(judges)
-    passes = max(1, min(_MAX_PASSES, int(tool_cfg.get("passes", 1) or 1)))
+    passes = _resolve_passes(tool_cfg)
 
     # --- call judges concurrently, each on its own anonymous mapping ---
     async def one(judge: Dict[str, Any]) -> Dict[str, Any]:
@@ -835,9 +852,10 @@ async def _run(
         lines += ["", "Judge 间一致度（两两 ρ 均值，不受共识循环影响）："
                       f"{agree:.3f}"]
     if passes == 1:
-        lines += ["", "> 位置稳定性未测：在插件设置里把 `passes=2`，让每个 judge "
-                     "在两套匿名映射下各排一次，可得到 judge 内的位置稳定性 ρ，"
-                     "并把该 judge 的位置偏好从它的票里平均掉。"]
+        lines += ["", "> 位置稳定性未测：设 `LISTWISE_RANK_PASSES=2`（写进 "
+                     "~/.qwenpaw.secret/envs.json 后重启，或本工具的 passes 配置项）"
+                     "，让每个 judge 在两套匿名映射下各排一次，可得到 judge 内的"
+                     "位置稳定性 ρ，并把该 judge 的位置偏好从它的票里平均掉。"]
 
     warn_lines: List[str] = []
     for dropped, keeper in merged_dupes:

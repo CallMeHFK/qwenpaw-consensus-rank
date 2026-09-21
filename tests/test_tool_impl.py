@@ -24,6 +24,12 @@ _spec = importlib.util.spec_from_file_location(
 tool_impl = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(tool_impl)
 
+# Hermetic suite guard: the real _load_plugin_config reads this machine's
+# QwenPaw agent config, and a locally configured `passes` was enough to change
+# these results. Tests that care about config patch it explicitly.
+tool_impl._load_plugin_config = lambda name: {}
+os.environ.pop("LISTWISE_RANK_PASSES", None)
+
 
 _CELL_PIPES = re.compile(r"(?<!\\)\|")
 
@@ -642,7 +648,7 @@ class StabilityPassesTest(unittest.TestCase):
             chunk = _run(["x1", "x2", "x3"], judges=self.JUDGES)
         text = _text(chunk)
         self.assertIn("位置稳定性未测", text)
-        self.assertIn("passes=2", text)
+        self.assertIn("LISTWISE_RANK_PASSES=2", text)
         self.assertIn("| 1 | #1 | 1.00 | x1 |", text)  # listwise path unchanged
 
 
@@ -682,6 +688,32 @@ class ChampionVerdictTest(unittest.TestCase):
         text = self._run_with({"j1": [0, 1, 2], "j2": [1, 0, 2],
                                "j3": [0, 1, 2], "j4": [1, 0, 2]})
         self.assertIn("并列，本报告不给唯一冠军", text)
+
+
+class ResolvePassesTest(unittest.TestCase):
+    """QwenPaw 2.2.1 exposes tool config only over HTTP (no settings UI field)
+    and get_tool_config needs an agent context, so an env var must work -
+    otherwise the feature is unreachable for a clean install. Doubling judge
+    calls silently is not an acceptable default, so passes stays opt-in."""
+
+    def test_default_is_single_pass(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(tool_impl._resolve_passes({}), 1)
+
+    def test_env_var_enables_it_without_any_ui(self):
+        with mock.patch.dict(os.environ, {"LISTWISE_RANK_PASSES": "2"}):
+            self.assertEqual(tool_impl._resolve_passes({}), 2)
+
+    def test_plugin_config_wins_over_env(self):
+        with mock.patch.dict(os.environ, {"LISTWISE_RANK_PASSES": "3"}):
+            self.assertEqual(tool_impl._resolve_passes({"passes": 1}), 1)
+
+    def test_garbage_and_out_of_range_are_clamped(self):
+        for bad in ("", "abc", "0", "-5", "99"):
+            with mock.patch.dict(os.environ, {"LISTWISE_RANK_PASSES": bad}):
+                self.assertIn(tool_impl._resolve_passes({}), (1, 2, 3), bad)
+        self.assertEqual(tool_impl._resolve_passes({"passes": 99}), 3)
+        self.assertEqual(tool_impl._resolve_passes({"passes": 0}), 1)
 
 
 class RunConsensusTest(unittest.TestCase):

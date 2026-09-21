@@ -171,7 +171,7 @@ an active channel under the token group (503).
 Keys can live in QwenPaw's secret store (`~/.qwenpaw.secret/envs.json`) or in
 regular environment variables.
 
-### Settings UI fields (per-tool config)
+### Per-tool config fields
 
 | Field | Default | Notes |
 |---|---|---|
@@ -180,6 +180,37 @@ regular environment variables.
 | `timeout` | 180 | per-judge HTTP timeout (seconds) |
 | `max_tokens` | 4096 | per-judge completion budget |
 | `passes` | 1 | 1–3; with ≥2 each judge ranks the same slate under that many independent anonymizations |
+
+**How a field actually reaches the tool** (QwenPaw 2.2.1 — every route below was
+run against a live install; `plugins/registry.py:1061`, `app/routers/tools.py:346,445`):
+
+1. **Env var — no UI required, survives everything.** Add to
+   `~/.qwenpaw.secret/envs.json` and restart:
+   ```
+   "LISTWISE_RANK_PASSES": "2"
+   ```
+   Supported: `LISTWISE_RANK_PASSES` (1–3). Judge lineup can also come from `JUDGE_MODELS`.
+2. **Per-agent tool config.** Written by the web UI's tool-config form, or:
+   ```bash
+   curl -s -X POST http://127.0.0.1:19999/api/tools/rank_candidates_listwise/config \
+     -H 'Content-Type: application/json' \
+     -d '{"config": {"passes": 2}}'
+   # read it back:
+   curl -s http://127.0.0.1:19999/api/tools/rank_candidates_listwise/config
+   ```
+   The body **must** wrap the keys in `"config"` — a flat `{"passes": 2}` validates
+   against `ToolConfigUpdate` as an empty config and silently clears the stored one.
+   Values land in `~/.qwenpaw/workspaces/<agent>/agent.json` under
+   `tools.builtin_tools.rank_candidates_listwise.config`, and this store is
+   **per agent** — set it once per agent you use.
+3. Precedence: tool config > env var > default.
+
+If the settings form shows no `passes` field, the running process still holds an
+older `plugin.json` (fields come from the manifest at registration time) — restart
+once; route 1 works regardless.
+
+Note on `plugin.json`: `meta.tools[].config_fields` declares the form; a build that
+renders it will show these fields after a restart (the manifest is read at registration).
 
 ### 位置稳定性（`passes` >= 2）
 
@@ -231,6 +262,39 @@ report cannot show at all.
    in the log.
 4. Enable the **rank_candidates_listwise** tool in your agent settings
    (plugin tools are disabled by default).
+
+### Verify the install
+
+Ask the agent to rank three obviously different options with a task, e.g.
+"用 rank_candidates_listwise 排序：候选[单体/三服务/八微服务]，任务=10 人团队 6 个月上线".
+A working install returns `# 多 Judge 共识排序报告` with 候选数：3 and at least one
+`有效 judge`. No provider key anywhere → it returns the setup wizard instead of an
+error, which also means the plugin loaded.
+
+Checks worth doing once:
+
+```bash
+# config route (per agent):
+curl -s http://127.0.0.1:19999/api/tools/rank_candidates_listwise/config
+```
+
+| Symptom | Meaning |
+|---|---|
+| report header shows the old wording / `位置稳定性` column missing | the process still runs a previous version — restart |
+| `all judges failed; check base_url / api_key_env` | keys not visible to the process (envs.json edited but not restarted) |
+| `base_url 取到的是 QwenPaw 密文（ENC:...）` | the tool was invoked outside QwenPaw; run it inside the app |
+
+### Upgrading from an earlier version
+
+Restart is required (the plugin code and its manifest are read at registration).
+One caveat found on real installs: entries already written into
+`workspaces/<agent>/agent.json` are **never refreshed** — both write sites are
+guarded by `if tool_name not in builtin_tools` (`plugins/api.py:287`,
+`app/routers/plugins.py:293`) — so the stored `description` keeps the text from
+whenever the tool first appeared (e.g. "Borda-aggregated" from v1.1.x). The tool
+function itself comes from the plugin, so behaviour is current; only the
+description shown in the tools list is stale. Delete that entry and restart to
+have it re-created from the current manifest.
 
 No extra pip dependencies — stdlib only (`urllib`).
 
@@ -296,7 +360,7 @@ Real report produced by the current code (one judge returned a partial ballot):
 
 Judge 间一致度（两两 ρ 均值，不受共识循环影响）：0.500
 
-> 位置稳定性未测：在插件设置里把 `passes=2`，让每个 judge 在两套匿名映射下各排一次，可得到 judge 内的位置稳定性 ρ，并把该 judge 的位置偏好从它的票里平均掉。
+> 位置稳定性未测：设 `LISTWISE_RANK_PASSES=2`（写进 ~/.qwenpaw.secret/envs.json 后重启，或本工具的 passes 配置项），让每个 judge 在两套匿名映射下各排一次，可得到 judge 内的位置稳定性 ρ，并把该 judge 的位置偏好从它的票里平均掉。
 
 ### 配置与完整性警告
 - **glm**：排名不完整，缺少 #1 的位次（未计入共识，仅单列其 ρ 供参考）
@@ -330,6 +394,28 @@ How to read it:
   telling you its ballot is partly label position.
 
 ## Changelog
+
+### v1.4.3 (2026-09-21)
+
+A fresh install had to be usable straight from the README; it wasn't.
+
+- **`LISTWISE_RANK_PASSES` env var.** QwenPaw 2.2.1 exposes per-tool config over
+  HTTP only (`app/routers/tools.py`), and reading it needs an agent context, so
+  the `passes` field added in v1.4.0 had no reachable setting on a clean install.
+  Env var → `~/.qwenpaw.secret/envs.json`, restart, done. Precedence stays
+  tool config > env > default, and the default remains 1 (silently doubling
+  everyone's judge calls is not a default).
+- **README config/Install sections rewritten around measured behaviour**: the
+  `POST /api/tools/<tool>/config` body must wrap keys in `"config"` (a flat
+  `{"passes": 2}` validates as an empty config and wipes the stored one),
+  per-tool config is per agent, and a verification + troubleshooting table was
+  added. The upgrade caveat is documented: entries already present in
+  `workspaces/<agent>/agent.json` are never refreshed by registration, so an
+  upgraded install keeps showing the old tool description.
+- **Tests are now hermetic.** They were reading this machine's live agent
+  config — setting `passes` locally changed what the suite asserted. The suite
+  now pins `_load_plugin_config` and clears the env var, and is verified green
+  both clean and with `LISTWISE_RANK_PASSES=2` in the environment.
 
 ### v1.4.2 (2026-09-21)
 
