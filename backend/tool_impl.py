@@ -550,6 +550,40 @@ def _consensus(votes: List[List[float]],
     return order, mean
 
 
+def _champion_verdict(votes: List[List[float]], n: int,
+                      names: List[str]) -> str:
+    """Is the first place robust to dropping any single judge's ballot?
+
+    Leave-one-out over ballots already in hand, so it costs no extra calls and
+    needs no arbitrary margin threshold - "one judge can change the champion"
+    is the statement the reader actually acts on.
+    """
+    order, mean = _consensus(votes, n)
+    champ, runner = order[0], order[1]
+    gap = mean[runner] - mean[champ]
+    if gap <= 1e-9:
+        tied = "、".join(f"#{c + 1}" for c in range(n)
+                         if abs(mean[c] - mean[champ]) <= 1e-9)
+        return (f"冠军判定：{tied} 平均名次并列，本报告不给唯一冠军"
+                "（按并列对待，或增加独立 judge）")
+    if len(votes) < 2:
+        return (f"冠军判定：#{champ + 1} 领先第 2 名 {gap:.2f} 个平均名次，"
+                "但只有 1 张票，无法做留一复核")
+    weak = []
+    for i, v in enumerate(votes):
+        rest = votes[:i] + votes[i + 1:]
+        o2, m2 = _consensus(rest, n)
+        if o2[0] != champ or m2[o2[1]] - m2[o2[0]] <= 1e-9:
+            weak.append(names[i])
+    if weak:
+        return (f"冠军判定：#{champ + 1} 领先第 2 名 {gap:.2f} 个平均名次，"
+                f"但去掉 {'、'.join(weak)} 的票后冠军不再唯一"
+                " → 对单张票敏感，建议按并列对待或增加独立 judge")
+    return (f"冠军判定：#{champ + 1} 领先第 2 名 {gap:.2f} 个平均名次；"
+            f"去掉任一 judge 复算 {len(votes)}/{len(votes)} 次冠军不变"
+            " → 冠军稳定")
+
+
 async def rank_candidates_listwise(
     candidates: List[str],
     task: str = "",
@@ -581,8 +615,10 @@ async def rank_candidates_listwise(
             0 = a fresh random mapping each run, echoed in the report).
 
     Returns:
-        ToolChunk: markdown consensus report (mean-rank table + judge
-        consistency table + skipped-judge and integrity warnings).
+        ToolChunk: markdown consensus report (mean-rank table + champion
+        verdict + judge consistency table + skipped-judge and integrity
+        warnings). Trust the champion verdict line before acting on rank 1:
+        it recomputes the consensus without each judge in turn.
     """
     try:
         return await _run(candidates, task, judges, seed)
@@ -763,7 +799,9 @@ async def _run(
                      f"{mean_rank[cid] + 1:.2f} | {_md_cell(_clip(uniq[cid]))} |")
 
     stab_head = "位置稳定性" if passes > 1 else "位置稳定性（未测）"
-    lines += ["", "## Judge 一致性（Spearman ρ vs 共识）", "",
+    lines += ["", _champion_verdict([r["vote"] for r in voted], n,
+                                     [r["name"] for r in voted]),
+              "", "## Judge 一致性（Spearman ρ vs 共识）", "",
               f"| Judge | 模型 | ρ | {stab_head} | 原始排序 |",
               "|---|---|---|---|---|"]
     for r in sorted(results, key=lambda x: (x["rho"] is None,

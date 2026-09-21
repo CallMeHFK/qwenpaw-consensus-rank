@@ -609,6 +609,44 @@ class StabilityPassesTest(unittest.TestCase):
         self.assertIn("| 1 | #1 | 1.00 | x1 |", text)  # listwise path unchanged
 
 
+class ChampionVerdictTest(unittest.TestCase):
+    """Leave-one-out: does the #1 survive dropping any single judge's ballot?
+
+    No threshold is involved - "one ballot can change the champion" is the
+    thing a reader actually needs to know, and it is computable from ballots
+    the tool already holds.
+    """
+
+    def _run_with(self, orders_by_name):
+        names = list(orders_by_name)
+        judges = json.dumps([{"name": n, "model": f"m{i}"}
+                             for i, n in enumerate(names)])
+        answers = {n: _chain(42, n, orders_by_name[n], 3) for n in names}
+        with _mock_call_judge(answers):
+            return _text(_run(["x1", "x2", "x3"], judges=judges))
+
+    def test_unanimous_champion_is_reported_stable(self):
+        text = self._run_with({"j1": [0, 1, 2], "j2": [0, 1, 2],
+                               "j3": [0, 1, 2]})
+        self.assertIn("冠军判定", text)
+        self.assertIn("领先第 2 名 1.00", text)
+        self.assertIn("冠军稳定", text)
+
+    def test_champion_held_up_by_one_ballot_is_flagged(self):
+        # j1 is the load-bearing ballot for #2 (x2): dropping it ties #1/#2,
+        # so the winner stops being unique
+        text = self._run_with({"j1": [1, 2, 0], "j2": [0, 1, 2],
+                               "j3": [1, 0, 2]})
+        self.assertIn("冠军判定", text)
+        self.assertIn("对单张票敏感", text)
+        self.assertIn("j1", text.split("冠军判定")[1])
+
+    def test_tied_champion_is_declared_outright(self):
+        text = self._run_with({"j1": [0, 1, 2], "j2": [1, 0, 2],
+                               "j3": [0, 1, 2], "j4": [1, 0, 2]})
+        self.assertIn("并列，本报告不给唯一冠军", text)
+
+
 class RunConsensusTest(unittest.TestCase):
     def setUp(self):
         patcher = mock.patch.object(tool_impl, "_load_plugin_config",

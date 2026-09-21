@@ -284,15 +284,19 @@ Real report produced by the current code (one judge returned a partial ballot):
 | 2（并列） | #1 | 2.50 | 微服务拆分：按业务域拆成 8 个服务 |
 | 3（并列） | #2 | 2.50 | 服务化中间态：3 个粗粒度服务 |
 
+冠军判定：#3 领先第 2 名 1.50 个平均名次；去掉任一 judge 复算 2/2 次冠军不变 → 冠军稳定
+
 ## Judge 一致性（Spearman ρ vs 共识）
 
-| Judge | 模型 | ρ | 原始排序 |
-|---|---|---|---|
-| qwen35 | qwen3.5-122b | 1.000 | #3 > #1 > #2 |
-| agnes | agnes-2.5-flash | 0.500 | #3 > #2 > #1 |
-| glm | glm-5.2 | 0.500 | #3 > #2 |
+| Judge | 模型 | ρ | 位置稳定性（未测） | 原始排序 |
+|---|---|---|---|---|
+| qwen35 | qwen3.5-122b | 1.000 | - | #3 > #1 > #2 |
+| agnes | agnes-2.5-flash | 0.500 | - | #3 > #2 > #1 |
+| glm | glm-5.2 | 0.500 | - | #3 > #2 |
 
 Judge 间一致度（两两 ρ 均值，不受共识循环影响）：0.500
+
+> 位置稳定性未测：在插件设置里把 `passes=2`，让每个 judge 在两套匿名映射下各排一次，可得到 judge 内的位置稳定性 ρ，并把该 judge 的位置偏好从它的票里平均掉。
 
 ### 配置与完整性警告
 - **glm**：排名不完整，缺少 #1 的位次（未计入共识，仅单列其 ρ 供参考）
@@ -311,6 +315,15 @@ How to read it:
   low mean-rank spread with high inter-judge ρ is the signal you want. High
   repeatability is not correctness — it says the judges agree, not that the
   winner is right.
+- **冠军判定** is a leave-one-out check on the ballots already in hand (no extra
+  calls, no tuned threshold): it recomputes the consensus without each judge in
+  turn. `冠军稳定` means no single ballot can change who is first; `对单张票敏感`
+  names the load-bearing judge, and the honest reading is "these two are
+  effectively tied". An exact tie for first is declared as no unique champion.
+  This is why pairwise top-2 rematches were not added: 3 majority votes flip a
+  truly-better option ~35% of the time at 60% pairwise accuracy, and the
+  sensitivity they detect is already measured upstream by `位置稳定性` and here
+  by the leave-one-out check.
 - **位置稳定性** (needs `passes` >= 2) is per-judge and consensus-independent:
   it asks whether that judge's order survives a reshuffle of the anonymization.
   A judge with ρ=1.000 against the consensus but 0.500 against itself is
@@ -318,7 +331,22 @@ How to read it:
 
 ## Changelog
 
-### v1.4.0 (2026-09-20)
+### v1.4.1 (2026-09-21)
+
+- **`冠军判定` line** under the consensus table: leave-one-out over the ballots
+  already collected — the consensus is recomputed with each judge removed, and
+  if any removal changes who is first (or makes first place a tie) the line
+  names that load-bearing judge and says 对单张票敏感. Zero extra calls, no
+  tuned margin threshold, and an exact tie for first is now stated as "no
+  unique champion" instead of silently picking one.
+- Pairwise top-2 rematches deliberately **not** implemented, with the reasoning
+  recorded in the README: at 60% pairwise accuracy a 3-vote majority flips the
+  truly-better candidate ~35% of the time, and neutralizing the duel's own
+  two-position bias needs both orders plus repeats — while the sensitivity it
+  would detect is already covered by `位置稳定性` (upstream) and this
+  leave-one-out check (downstream).
+
+### v1.4.0 (2026-09-21)
 
 - **`passes` (1–3, default 1): per-judge permutation ensembling.** With
   `passes>=2` each judge ranks the same slate under several independent
