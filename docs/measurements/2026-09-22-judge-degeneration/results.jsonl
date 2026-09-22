@@ -1,0 +1,20 @@
+{"block": 0, "arm": "old", "usable": true, "complete": true, "n_parsed": 4, "raw": "We need answer only ranking. Need evalua"}
+{"block": 0, "arm": "new", "usable": false, "complete": false, "n_parsed": 1, "raw": "A"}
+{"block": 1, "arm": "old", "usable": true, "complete": true, "n_parsed": 4, "raw": "We need answer only ranking. Need evalua"}
+{"block": 1, "arm": "new", "usable": true, "complete": true, "n_parsed": 4, "raw": "We need answer only ranking line with A "}
+{"block": 2, "arm": "old", "usable": false, "complete": false, "n_parsed": 1, "raw": "B"}
+{"block": 2, "arm": "new", "usable": true, "complete": true, "n_parsed": 4, "raw": "We need answer as reviewer. Need output "}
+{"block": 3, "arm": "old", "usable": true, "complete": true, "n_parsed": 4, "raw": "C > B > D > A"}
+{"block": 3, "arm": "new", "usable": true, "complete": true, "n_parsed": 4, "raw": "We need answer only ranking line A B C D"}
+{"block": 4, "arm": "old", "usable": true, "complete": true, "n_parsed": 4, "raw": "We need answer only ranking. Need evalua"}
+{"block": 4, "arm": "new", "usable": true, "complete": true, "n_parsed": 4, "raw": "We need answer only ranking line with A "}
+{"block": 5, "arm": "old", "usable": true, "complete": true, "n_parsed": 4, "raw": "We need answer only ranking best to wors"}
+{"block": 5, "arm": "new", "usable": true, "complete": true, "n_parsed": 4, "raw": "We need answer only ordering line A B C "}
+{"block": 6, "arm": "old", "usable": true, "complete": true, "n_parsed": 4, "raw": "We need answer ranking only. Need evalua"}
+{"block": 6, "arm": "new", "usable": false, "complete": false, "n_parsed": 1, "raw": "C"}
+{"block": 7, "arm": "old", "usable": true, "complete": true, "n_parsed": 4, "raw": "We need answer only ranking. Need evalua"}
+{"block": 7, "arm": "new", "usable": true, "complete": true, "n_parsed": 4, "raw": "We need answer only ranking line A B C D"}
+{"block": 8, "arm": "old", "usable": true, "complete": true, "n_parsed": 4, "raw": "We need answer only ranking. Need evalua"}
+{"block": 8, "arm": "new", "usable": true, "complete": false, "n_parsed": 2, "raw": "We need answer only ranking line with A "}
+{"block": 9, "arm": "old", "usable": true, "complete": true, "n_parsed": 4, "raw": "We need answer only ordering. Need evalu"}
+{"block": 9, "arm": "new", "usable": true, "complete": true, "n_parsed": 4, "raw": "C > B > D > A"}
