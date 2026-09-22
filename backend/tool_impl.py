@@ -191,6 +191,18 @@ def _md_cell(s: Any) -> str:
     return str(s).replace("|", "\\|")
 
 
+def _retry_suffix(labels: List[str]) -> str:
+    """Hardened format restatement for the one retry a degenerate reply gets.
+
+    Phrased positively with a concrete example: the paired A/B test showed that
+    spelling out the wrong behaviour ("you only returned one label") is at best
+    neutral, and naming a failure can prime it.
+    """
+    example = " > ".join(labels[1:] + labels[:1])
+    return (f"\n\n重发（格式硬要求）：只输出一行，把全部 {len(labels)} 个标识符"
+            f"用 > 连接，形如 {example}。")
+
+
 def _judge_prompt(uniq: List[str], mapping: Dict[str, int],
                   task: str) -> str:
     """Build one judge's prompt from ITS OWN label -> candidate mapping.
@@ -724,6 +736,7 @@ async def _run(
         ballots: List[List[float]] = []
         orders: List[List[int]] = []
         gaps: List[List[int]] = []
+        retries = 0
         err = ""
         # Passes run in series per judge: one ballot per judge keeps its vote
         # at full weight, and the spread between its passes is the position
@@ -732,20 +745,33 @@ async def _run(
         for p in range(passes):
             key = name if p == 0 else f"{name}#{p}"
             mapping = _judge_label_map(n, run_seed, key)
-            try:
-                raw = await asyncio.to_thread(
-                    _call_judge, judge, _judge_prompt(uniq, mapping, task),
-                    temperature, timeout, max_tokens)
+            base_prompt = _judge_prompt(uniq, mapping, task)
+            prompt = base_prompt
+            order: List[int] = []
+            for attempt in (0, 1):
+                try:
+                    raw = await asyncio.to_thread(
+                        _call_judge, judge, prompt, temperature, timeout,
+                        max_tokens)
+                except Exception as e:
+                    # endpoint/parse plumbing: never retried here, the judge is
+                    # simply skipped with its actionable hint
+                    err = str(e)
+                    break
                 order = [mapping[lab] for lab
                          in _parse_ranking(raw, mapping.keys())
                          if lab in mapping]
-                if len(order) < 2:
-                    raise RuntimeError(f"unparseable ranking: {raw[:80]!r}")
+                if len(order) >= 2:
+                    err = ""
+                    if attempt:
+                        retries += 1
+                    break
+                err = f"unparseable ranking: {raw[:80]!r}"
+                prompt = base_prompt + _retry_suffix(list(mapping.keys()))
+            if len(order) >= 2:
                 ballots.append(_rank_vector(order, n))
                 orders.append(order)
                 gaps.append([c for c in range(n) if c not in order])
-            except Exception as e:
-                err = str(e)
         # A truncated pass says nothing about the candidates it omitted, but a
         # sibling pass that covered the whole slate is a real ballot: drop the
         # bad pass, not the judge.
@@ -762,7 +788,8 @@ async def _run(
             used = ballots
             missing = sorted({c for g in gaps for c in g})
         base = {"name": name, "model": judge.get("model", ""),
-                "warnings": warns, "passes_ok": len(ballots)}
+                "warnings": warns, "passes_ok": len(ballots),
+                "retries": retries}
         if not ballots:
             return dict(base, order=[], vote=[0.0] * n,
                         missing=list(range(n)), stability=None,
@@ -867,6 +894,10 @@ async def _run(
         for w in r.get("warnings", []):
             warn_lines.append(f"- **{r['name']}**：{w}")
     for r in valid:
+        if r.get("retries"):
+            warn_lines.append(
+                f"- **{r['name']}**：{r['retries']} 遍回复不合格，已各重试一次"
+                "并取回可用排序（多花的调用只发生在失败时）")
         stab = r.get("stability")
         if stab is not None and stab < _STABILITY_FLOOR:
             warn_lines.append(

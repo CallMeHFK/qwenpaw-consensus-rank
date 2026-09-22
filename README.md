@@ -414,6 +414,21 @@ How to read it:
 
 ## Changelog
 
+### v1.4.5 (2026-09-22)
+
+- **A degenerate reply is retried once.** When a judge's answer parses to fewer
+  than 2 identifiers, the same pass is asked again with a positively restated
+  format line (`重发（格式硬要求）：只输出一行，把全部 N 个标识符用 > 连接，形如
+  B>C>D>A。`) — no quoting of the wrong behaviour back at the model, because the
+  v1.4.4 measurement showed prohibition phrasing is at best neutral. Cost is one
+  extra call and only on the ~15% of calls that actually degenerate, so the
+  expected loss of a ballot drops from ~15% to ~2% (0.15^2, independence
+  assumed). Endpoint errors (502 / TLS / 401 / quota) are deliberately not
+  retried — those are reported with their existing actionable hints.
+- Measured honestly: the retry path has unit coverage (100 tests) but the live
+  confirmation run hit zero degenerate replies in 4 calls, so it has not yet
+  been observed firing against a real model.
+
 ### v1.4.4 (2026-09-22)
 
 - **Task wording can no longer override the ranking shape** — added as a

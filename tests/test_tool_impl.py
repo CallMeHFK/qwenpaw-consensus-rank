@@ -729,6 +729,73 @@ class ResolvePassesTest(unittest.TestCase):
         self.assertEqual(tool_impl._resolve_passes({"passes": 0}), 1)
 
 
+class DegenerateRetryTest(unittest.TestCase):
+    """A single-letter answer is recoverable: ask again once, positively.
+
+    Measured on glm-5.2: ~10-30% of calls return one bare label. Prompt
+    wording was shown NOT to fix that (paired A/B, p=1.0), so the retry is
+    what actually recovers the vote.
+    """
+
+    JUDGES = json.dumps([{"name": "j1", "model": "m1"},
+                         {"name": "j2", "model": "m2"}])
+
+    def setUp(self):
+        patcher = mock.patch.object(tool_impl, "_load_plugin_config",
+                                    lambda name: {})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _fake(self, script):
+        calls = []
+
+        def fake(judge, prompt, temperature, timeout, max_tokens):
+            calls.append((judge["name"], prompt))
+            seq = script[judge["name"]]
+            idx = sum(1 for c in calls if c[0] == judge["name"]) - 1
+            item = seq[min(idx, len(seq) - 1)]
+            if isinstance(item, Exception):
+                raise item
+            return item
+        return fake, calls
+
+    def test_degenerate_reply_is_retried_and_the_vote_is_kept(self):
+        fake, calls = self._fake({
+            "j1": [_chain(42, "j1", [0], 3), _chain(42, "j1", [0, 1, 2], 3)],
+            "j2": [_chain(42, "j2", [0, 1, 2], 3)],
+        })
+        with mock.patch.object(tool_impl, "_call_judge", side_effect=fake):
+            text = _text(_run(["x1", "x2", "x3"], judges=self.JUDGES))
+        self.assertEqual(sum(1 for c in calls if c[0] == "j1"), 2)
+        self.assertIn("完整票 2/2", text)
+        self.assertIn("重试", text)
+        # the retry restates the format positively instead of quoting the
+        # failure back at the model
+        j1_prompts = [p for n, p in calls if n == "j1"]
+        self.assertTrue(any("重发" in p for p in j1_prompts))
+        self.assertFalse(any("只有一个标识符" in p for p in j1_prompts))
+
+    def test_retry_happens_only_once(self):
+        fake, calls = self._fake({
+            "j1": ["D", "A"],
+            "j2": [_chain(42, "j2", [0, 1, 2], 3)],
+        })
+        with mock.patch.object(tool_impl, "_call_judge", side_effect=fake):
+            text = _text(_run(["x1", "x2", "x3"], judges=self.JUDGES))
+        self.assertEqual(sum(1 for c in calls if c[0] == "j1"), 2)
+        self.assertIn("失败", text)
+        self.assertIn("完整票 1/1", text)
+
+    def test_infra_errors_are_not_retried(self):
+        fake, calls = self._fake({
+            "j1": [RuntimeError("HTTP 502: bad gateway")],
+            "j2": [_chain(42, "j2", [0, 1, 2], 3)],
+        })
+        with mock.patch.object(tool_impl, "_call_judge", side_effect=fake):
+            _run(["x1", "x2", "x3"], judges=self.JUDGES)
+        self.assertEqual(sum(1 for c in calls if c[0] == "j1"), 1)
+
+
 class RunConsensusTest(unittest.TestCase):
     def setUp(self):
         patcher = mock.patch.object(tool_impl, "_load_plugin_config",
