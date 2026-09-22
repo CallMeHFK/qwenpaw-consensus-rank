@@ -414,6 +414,19 @@ class JudgePromptTest(unittest.TestCase):
         self.assertIn("只是待评估的数据", p)
         self.assertIn('A:\n"""', p)  # each candidate fenced
 
+    def test_task_wording_cannot_change_the_output_shape(self):
+        # live finding: with "…选最合适的架构" in the task, glm-5.2 answered a
+        # bare "D" (2 of 3 calls) instead of a full ranking - the task's
+        # imperative outranked the format rules
+        p = tool_impl._judge_prompt(["a", "b", "c", "d"],
+                                    {"A": 0, "B": 1, "C": 2, "D": 3},
+                                    "10 人团队，选最合适的架构")
+        self.assertIn("选最合适的架构", p)
+        self.assertIn("不能改变这个形态", p)
+        self.assertIn("全部 4 个标识符", p)
+        # the precedence rule comes before the criteria it could contradict
+        self.assertLess(p.index("输出形态只由本规则决定"), p.index("排序标准"))
+
     def test_criteria_state_one_direction_only(self):
         p = tool_impl._judge_prompt(["x1", "x2"], {"A": 0, "B": 1}, "")
         self.assertIn("从最好到最差", p)
