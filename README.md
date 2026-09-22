@@ -414,6 +414,20 @@ How to read it:
 
 ## Changelog
 
+### v1.4.4 (2026-09-22)
+
+- **Task wording can no longer override the ranking shape.** A live probe
+  against `glm-5.2` returned a bare `D` on 2 of 3 calls once the `task` text was
+  phrased as an imperative (`…选最合适的架构`): the "pick one" reading inside
+  任务背景 outranked the format rules, so that ballot degenerated and — with a
+  second gateway down — the panel lost its consensus entirely. The rules now open
+  with an explicit precedence clause that names the identifier count, and sit
+  above the criterion they could conflict with. Causally verified: same model,
+  same triggering task text, 4/4 complete rankings afterwards.
+- Reading `位置稳定性` with this in mind: a judge that recites `A>B>C>D` under
+  every anonymization passes a single-pass check but scores low intra-judge rho.
+  That template answer is what the column exists to surface.
+
 ### v1.4.3 (2026-09-21)
 
 A fresh install had to be usable straight from the README; it wasn't.
