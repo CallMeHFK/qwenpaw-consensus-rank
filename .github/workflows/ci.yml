@@ -18,3 +18,5 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Run tests
         run: python -m unittest discover -s tests -v
+      - name: Build the plugin archive
+        run: python packaging/build_plugin_zip.py

@@ -1,0 +1,45 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  plugin-archive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run tests
+        run: python -m unittest discover -s tests
+
+      - name: Build the QwenPaw plugin archive
+        run: python packaging/build_plugin_zip.py --tag "$GITHUB_REF_NAME"
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          id="$(python -c 'import json;print(json.load(open("plugin.json"))["id"])')"
+          asset="dist/$id-qwenpaw-plugin.zip"
+          url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/latest/download/$id-qwenpaw-plugin.zip"
+          {
+            python packaging/release_notes.py "$tag"
+            printf '\n---\n\nInstall:\n\n```\nqwenpaw plugin install %s\n```\n\n' "$url"
+            printf 'The two `Source code` archives GitHub adds automatically also install, but they unpack tests/, packaging/ and .github/ into ~/.qwenpaw/plugins/ — install this asset instead.\n'
+          } > notes.md
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release edit "$tag" --latest --notes-file notes.md
+            gh release upload "$tag" "$asset" --clobber
+          else
+            gh release create "$tag" "$asset" --latest --title "$tag" --notes-file notes.md
+          fi
+          gh release view "$tag" --json tagName,assets --jq '.tagName + " " + ([.assets[].name] | join(", "))'
