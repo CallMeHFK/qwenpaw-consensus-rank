@@ -77,16 +77,24 @@ the result is one model's opinion, not a consensus).
 
 ## Initialization (first run)
 
-After install + restart, the plugin probes provider keys **at registration
-time** (env var names only — values are never logged):
+After install + restart, confirm the loaded version through the API (the
+plugin's own registration log lines do not reliably reach `qwenpaw.log`, so
+don't look for them):
 
-- **Keys found** → log: `Listwise Rank: N provider key(s) detected (...)`,
-  built-in default judges are ready.
-- **No keys** → log warns, and the **first tool call returns a setup wizard**
-  instead of a bare error: quick-start paths, a provider cheat-sheet
-  (OpenAI / DeepSeek / Kimi / 智谱 GLM / 阿里百炼 Qwen / OpenRouter /
-  SiliconFlow / 本地 vLLM·Ollama), and a `judges_json` template for
-  multi-vendor mixing.
+```bash
+curl -s http://127.0.0.1:19999/api/plugins | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+p=[x for x in (d if isinstance(d,list) else d['plugins'])
+   if x.get('id')=='listwise-rank'][0]
+print(p['version'], 'loaded' if p['loaded'] else 'NOT LOADED')"
+# expect: 1.4.3 loaded
+```
+
+- **Keys found** → judges run against their endpoints.
+- **No keys anywhere** → the first tool call returns a setup wizard instead of
+  a bare error: quick-start paths, a provider cheat-sheet (OpenAI / DeepSeek /
+  Kimi / 智谱 GLM / 阿里百炼 Qwen / OpenRouter / SiliconFlow / 本地 vLLM·Ollama),
+  and a `judges_json` template for multi-vendor mixing.
 
 **Any OpenAI-compatible provider works** — official APIs or self-hosted
 gateways (vLLM / Ollama / one-api / new-api). Keys live in
