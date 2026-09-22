@@ -191,6 +191,23 @@ def _md_cell(s: Any) -> str:
     return str(s).replace("|", "\\|")
 
 
+def _is_transient(msg: str) -> bool:
+    """Would asking again plausibly help?
+
+    Measured here: a vLLM gateway 502'd twice then served fine, another judge
+    threw a one-off SSL EOF. Config errors (bad token, quota, no channel, unset
+    base_url) never self-heal, so retrying them only burns the call and buries
+    the actionable hint.
+    """
+    m = msg.lower()
+    if ("no available channel" in m or "model_not_found" in m
+            or "token" in m or "quota" in m or "credits" in m
+            or "missing endpoint/key" in m):
+        return False
+    return ("unreachable" in m or "ssl" in m or "timed out" in m
+            or "gateway-side failure" in m or "http 5" in m)
+
+
 def _retry_suffix(labels: List[str]) -> str:
     """Hardened format restatement for the one retry a degenerate reply gets.
 
@@ -737,6 +754,7 @@ async def _run(
         orders: List[List[int]] = []
         gaps: List[List[int]] = []
         retries = 0
+        net_retries = 0
         err = ""
         # Passes run in series per judge: one ballot per judge keeps its vote
         # at full weight, and the spread between its passes is the position
@@ -754,9 +772,12 @@ async def _run(
                         _call_judge, judge, prompt, temperature, timeout,
                         max_tokens)
                 except Exception as e:
-                    # endpoint/parse plumbing: never retried here, the judge is
-                    # simply skipped with its actionable hint
                     err = str(e)
+                    if attempt == 0 and _is_transient(err):
+                        # one-off gateway trouble: wait briefly, ask again
+                        await asyncio.sleep(1.0)
+                        net_retries += 1
+                        continue
                     break
                 order = [mapping[lab] for lab
                          in _parse_ranking(raw, mapping.keys())
@@ -789,7 +810,7 @@ async def _run(
             missing = sorted({c for g in gaps for c in g})
         base = {"name": name, "model": judge.get("model", ""),
                 "warnings": warns, "passes_ok": len(ballots),
-                "retries": retries}
+                "retries": retries, "net_retries": net_retries}
         if not ballots:
             return dict(base, order=[], vote=[0.0] * n,
                         missing=list(range(n)), stability=None,
@@ -898,6 +919,10 @@ async def _run(
             warn_lines.append(
                 f"- **{r['name']}**：{r['retries']} 遍回复不合格，已各重试一次"
                 "并取回可用排序（多花的调用只发生在失败时）")
+        if r.get("net_retries"):
+            warn_lines.append(
+                f"- **{r['name']}**：端点瞬时故障重试 {r['net_retries']} 次后恢复"
+                "（502/网络/超时只试一次；密钥、配额、无通道类不重试）")
         stab = r.get("stability")
         if stab is not None and stab < _STABILITY_FLOOR:
             warn_lines.append(

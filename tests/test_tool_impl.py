@@ -745,55 +745,82 @@ class DegenerateRetryTest(unittest.TestCase):
                                     lambda name: {})
         patcher.start()
         self.addCleanup(patcher.stop)
+        self.calls = []
+        self.prompts = []
 
     def _fake(self, script):
-        calls = []
+        calls, prompts = self.calls, self.prompts
 
         def fake(judge, prompt, temperature, timeout, max_tokens):
-            calls.append((judge["name"], prompt))
-            seq = script[judge["name"]]
-            idx = sum(1 for c in calls if c[0] == judge["name"]) - 1
+            name = judge["name"]
+            calls.append(name)
+            prompts.append(prompt)
+            seq = script[name]
+            idx = sum(1 for c in calls if c == name) - 1
             item = seq[min(idx, len(seq) - 1)]
             if isinstance(item, Exception):
                 raise item
             return item
-        return fake, calls
+        return fake
 
     def test_degenerate_reply_is_retried_and_the_vote_is_kept(self):
-        fake, calls = self._fake({
+        fake = self._fake({
             "j1": [_chain(42, "j1", [0], 3), _chain(42, "j1", [0, 1, 2], 3)],
             "j2": [_chain(42, "j2", [0, 1, 2], 3)],
         })
         with mock.patch.object(tool_impl, "_call_judge", side_effect=fake):
             text = _text(_run(["x1", "x2", "x3"], judges=self.JUDGES))
-        self.assertEqual(sum(1 for c in calls if c[0] == "j1"), 2)
+        self.assertEqual(self.calls.count("j1"), 2)
         self.assertIn("完整票 2/2", text)
         self.assertIn("重试", text)
-        # the retry restates the format positively instead of quoting the
-        # failure back at the model
-        j1_prompts = [p for n, p in calls if n == "j1"]
-        self.assertTrue(any("重发" in p for p in j1_prompts))
-        self.assertFalse(any("只有一个标识符" in p for p in j1_prompts))
+        # restated positively; the wrong behaviour is never quoted back
+        self.assertTrue(any("重发" in p for p in self.prompts))
+        self.assertFalse(any("只有一个标识符" in p for p in self.prompts))
 
     def test_retry_happens_only_once(self):
-        fake, calls = self._fake({
+        fake = self._fake({
             "j1": ["D", "A"],
             "j2": [_chain(42, "j2", [0, 1, 2], 3)],
         })
         with mock.patch.object(tool_impl, "_call_judge", side_effect=fake):
             text = _text(_run(["x1", "x2", "x3"], judges=self.JUDGES))
-        self.assertEqual(sum(1 for c in calls if c[0] == "j1"), 2)
+        self.assertEqual(self.calls.count("j1"), 2)
         self.assertIn("失败", text)
         self.assertIn("完整票 1/1", text)
 
-    def test_infra_errors_are_not_retried(self):
-        fake, calls = self._fake({
-            "j1": [RuntimeError("HTTP 502: bad gateway")],
-            "j2": [_chain(42, "j2", [0, 1, 2], 3)],
-        })
-        with mock.patch.object(tool_impl, "_call_judge", side_effect=fake):
-            _run(["x1", "x2", "x3"], judges=self.JUDGES)
-        self.assertEqual(sum(1 for c in calls if c[0] == "j1"), 1)
+    def test_transient_endpoint_failure_is_retried_once(self):
+        # measured on this machine: a vLLM gateway returned 502 twice and then
+        # recovered, an SSL EOF hit another judge - a dead-looking judge is
+        # often a momentary one, and losing it costs a vote
+        for msg in ("HTTP 502 -> gateway-side failure; retry later",
+                    "endpoint unreachable ([SSL: UNEXPECTED_EOF] )",
+                    "judge timed out after 90s"):
+            self.calls.clear()
+            self.prompts.clear()
+            fake = self._fake({"j1": [RuntimeError(msg),
+                                      _chain(42, "j1", [0, 1, 2], 3)],
+                               "j2": [_chain(42, "j2", [0, 1, 2], 3)]})
+            with mock.patch.object(tool_impl, "_call_judge", side_effect=fake):
+                text = _text(_run(["x1", "x2", "x3"], judges=self.JUDGES))
+            self.assertEqual(self.calls.count("j1"), 2, msg)
+            self.assertIn("完整票 2/2", text)
+            self.assertIn("端点瞬时故障", text)
+
+    def test_configuration_errors_are_not_retried(self):
+        # 401 / quota / no-channel are not going to fix themselves; retrying
+        # only burns the call and hides the actionable hint
+        for msg in ("HTTP 401 -> token rejected; check the api_key_env value",
+                    "HTTP 429 -> quota/rate limit; increase the quota",
+                    "HTTP 503 -> no available channel for the model",
+                    "missing endpoint/key (base_url=unset, key_env=X)"):
+            self.calls.clear()
+            self.prompts.clear()
+            fake = self._fake({"j1": [RuntimeError(msg)],
+                               "j2": [_chain(42, "j2", [0, 1, 2], 3)]})
+            with mock.patch.object(tool_impl, "_call_judge", side_effect=fake):
+                text = _text(_run(["x1", "x2", "x3"], judges=self.JUDGES))
+            self.assertEqual(self.calls.count("j1"), 1, msg)
+            self.assertIn("完整票 1/1", text)
 
 
 class RunConsensusTest(unittest.TestCase):

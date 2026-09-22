@@ -414,6 +414,20 @@ How to read it:
 
 ## Changelog
 
+### v1.4.6 (2026-09-22)
+
+- **Transient endpoint failures get one retry too.** Measured on this machine:
+  the internal vLLM gateway answered 502 on two runs and served fine afterwards,
+  and another judge threw a one-off SSL EOF — yet each such blip cost a whole
+  vote and dropped a 3-judge panel to "共识质量有限". Now 502/5xx, connection
+  and TLS failures and read timeouts are re-asked once after 1s and the report
+  says `端点瞬时故障重试 N 次后恢复`.
+- **Auth and capacity errors are still never retried** — bad token, quota / rate
+  limit, `no available channel`, unset base_url: they do not self-heal, and a
+  retry would only bury the actionable hint.
+- Tests 100 -> 101 (policy covered in both directions). Not yet observed firing
+  live: reproducing a real 502 on demand is not something the test controls.
+
 ### v1.4.5 (2026-09-22)
 
 - **A degenerate reply is retried once.** When a judge's answer parses to fewer
