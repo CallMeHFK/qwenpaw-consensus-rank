@@ -414,6 +414,18 @@ How to read it:
 
 ## Changelog
 
+### v1.4.7 (2026-09-22)
+
+- **A transient-endpoint retry was also being reported as a format retry.** Found
+  with a local HTTP stub that 502s once and then answers normally (3 real
+  requests, no model spend): the counter for "reply was degenerate" was
+  incremented on *any* second attempt, so a recovered 502 printed both
+  `端点瞬时故障重试 1 次后恢复` and a false `1 遍回复不合格`. The two reasons are now
+  counted separately and each direction has a regression test.
+- Method note worth keeping: the stub test exists because the mocked-`_call_judge`
+  suite could not catch this — the bug lived in how the two retry reasons shared a
+  counter, which only the reporting layer exposed.
+
 ### v1.4.6 (2026-09-22)
 
 - **Transient endpoint failures get one retry too.** Measured on this machine:

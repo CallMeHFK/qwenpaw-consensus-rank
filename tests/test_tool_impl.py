@@ -823,6 +823,28 @@ class DegenerateRetryTest(unittest.TestCase):
             self.assertIn("完整票 1/1", text)
 
 
+    def test_transient_retry_is_not_reported_as_a_format_retry(self):
+        # found by a socket-level stub run: a 502 recovery used to print BOTH
+        # "端点瞬时故障" and a bogus "回复不合格" line
+        fake = self._fake({"j1": [RuntimeError("HTTP 502 -> gateway-side failure"),
+                                  _chain(42, "j1", [0, 1, 2], 3)],
+                           "j2": [_chain(42, "j2", [0, 1, 2], 3)]})
+        with mock.patch.object(tool_impl, "_call_judge", side_effect=fake):
+            text = _text(_run(["x1", "x2", "x3"], judges=self.JUDGES))
+        tail = text.split("配置与完整性警告")[1]
+        self.assertIn("端点瞬时故障", tail)
+        self.assertNotIn("回复不合格", tail)
+
+    def test_format_retry_is_not_reported_as_a_transient_one(self):
+        fake = self._fake({"j1": ["D", _chain(42, "j1", [0, 1, 2], 3)],
+                           "j2": [_chain(42, "j2", [0, 1, 2], 3)]})
+        with mock.patch.object(tool_impl, "_call_judge", side_effect=fake):
+            text = _text(_run(["x1", "x2", "x3"], judges=self.JUDGES))
+        tail = text.split("配置与完整性警告")[1]
+        self.assertIn("回复不合格", tail)
+        self.assertNotIn("端点瞬时故障", tail)
+
+
 class RunConsensusTest(unittest.TestCase):
     def setUp(self):
         patcher = mock.patch.object(tool_impl, "_load_plugin_config",

@@ -784,10 +784,9 @@ async def _run(
                          if lab in mapping]
                 if len(order) >= 2:
                     err = ""
-                    if attempt:
-                        retries += 1
                     break
                 err = f"unparseable ranking: {raw[:80]!r}"
+                retries += 1
                 prompt = base_prompt + _retry_suffix(list(mapping.keys()))
             if len(order) >= 2:
                 ballots.append(_rank_vector(order, n))
