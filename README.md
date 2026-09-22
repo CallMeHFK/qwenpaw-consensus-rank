@@ -416,17 +416,26 @@ How to read it:
 
 ### v1.4.4 (2026-09-22)
 
-- **Task wording can no longer override the ranking shape.** A live probe
-  against `glm-5.2` returned a bare `D` on 2 of 3 calls once the `task` text was
-  phrased as an imperative (`…选最合适的架构`): the "pick one" reading inside
-  任务背景 outranked the format rules, so that ballot degenerated and — with a
-  second gateway down — the panel lost its consensus entirely. The rules now open
-  with an explicit precedence clause that names the identifier count, and sit
-  above the criterion they could conflict with. Causally verified: same model,
-  same triggering task text, 4/4 complete rankings afterwards.
-- Reading `位置稳定性` with this in mind: a judge that recites `A>B>C>D` under
-  every anonymization passes a single-pass check but scores low intra-judge rho.
-  That template answer is what the column exists to surface.
+- **Task wording can no longer override the ranking shape** — added as a
+  precedence clause naming the identifier count, placed above the criterion it
+  could contradict, after `glm-5.2` was seen answering a bare `D` once the
+  `task` text read as an imperative (`…选最合适的架构`).
+- **Measured, and it did not prove out.** Paired A/B on that model, 10 blocks,
+  each anonymization seed run under both templates, interleaved to cancel
+  gateway drift, production params (temp 0.2, max_tokens 4096): usable ballots
+  9/10 before vs 8/10 after, complete ballots 9/10 vs 7/10, sign-test exact
+  p=1.0 on both. The degeneration is a low-rate stochastic behaviour of the
+  model, not a consequence of that one phrasing, and the clause is at best
+  neutral — an earlier "4/4 fixed" claim from a 4-call probe was over-extrapolation
+  and is retracted here. Detecting a 20-point effect at this endpoint would need
+  ~90 paired blocks (~180 calls, hours), so prompt wording is not where this gets
+  fixed; a per-pass retry on a degenerate ballot is.
+- The clause stays because it removes a genuine ambiguity (a task may be legally
+  phrased as "pick the best one") at the cost of one sentence — not because the
+  measurement supports it as a fix.
+- Reading `位置稳定性` with any of this in mind: a judge that recites `A>B>C>D`
+  under every anonymization passes a single-pass check but scores low intra-judge
+  rho. That template answer is what the column exists to surface.
 
 ### v1.4.3 (2026-09-21)
 
