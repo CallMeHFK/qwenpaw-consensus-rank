@@ -1,7 +1,7 @@
 {
   "id": "listwise-rank",
   "name": "Listwise Rank Tool",
-  "version": "1.4.8",
+  "version": "1.4.9",
   "description": "Multi-judge consensus ranking: cross-family LLM judges independently rank candidates (each on its own anonymized labels, optionally several passes per judge for position-stability), rank-averaged into a consensus with Spearman consistency report",
   "description_i18n": {
     "zh-CN": "多 Judge 共识排序：跨家族大模型对匿名候选独立全排序（每个 judge 一套独立编号映射），名次平均得到共识并给出 Spearman 一致性报告，消除单一模型偏好",
@@ -14,7 +14,7 @@
   "dependencies": [],
   "qwenpaw_version": {
     "min": "1.1.6",
-    "max": "2.1.0"
+    "max": "2.3.0"
   },
   "meta": {
     "tools": [

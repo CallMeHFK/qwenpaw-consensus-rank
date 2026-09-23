@@ -2,6 +2,22 @@
 
 All notable changes to the `listwise-rank` QwenPaw plugin. The README keeps only the recent entries; this file has the full history, newest first.
 
+### v1.4.9 (2026-09-22)
+
+- **The declared QwenPaw ceiling excluded every host this plugin actually
+  runs on.** `plugin.json` said `qwenpaw_version.max: 2.1.0` while v1.4.2 onward
+  has been developed, installed and measured on 2.2.1. The field is
+  left-closed / right-open (`_version_compat.py`: `>=min, <max`), so it claimed
+  incompatibility with 2.1.0 *and everything newer*. Raised to `2.3.0`, which is
+  the honest ceiling: it covers the tested 2.2 line and stops short of claiming
+  anything about 3.x. Writing `2.2.1` would have been worse than the bug — it
+  refuses the build the range was measured on.
+- **Why it matters even though nothing breaks today**: the host currently
+  enforces only `>= min`, with the full-range check left in the source as
+  "restore when re-enabling". A stale `max` is inert until that line returns,
+  and then it is a load-time refusal with a message pointing at the manifest.
+- No change to the tool's behaviour, prompt or report.
+
 ### v1.4.8 (2026-09-22)
 
 No behaviour change in the tool. This release is about shipping it.

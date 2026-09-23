@@ -3,7 +3,7 @@
 [![Release](https://img.shields.io/github/v/release/CallMeHFK/qwenpaw-consensus-rank)](https://github.com/CallMeHFK/qwenpaw-consensus-rank/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/CallMeHFK/qwenpaw-consensus-rank/actions/workflows/ci.yml/badge.svg)](https://github.com/CallMeHFK/qwenpaw-consensus-rank/actions/workflows/ci.yml)
-[![QwenPaw](https://img.shields.io/badge/QwenPaw-%3E%3D1.1.6-green)](https://github.com/agentscope-ai/QwenPaw)
+[![QwenPaw](https://img.shields.io/badge/QwenPaw-1.1.6%20%C2%B7%20tested%20through%202.2.1-green)](https://github.com/agentscope-ai/QwenPaw)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
 
 QwenPaw tool plugin: **multi-judge consensus ranking** — cross-family LLM judges
@@ -57,6 +57,12 @@ A and B while the app is running go through its install route, which runs the
 plugin's startup hook immediately — **no restart** (measured on QwenPaw 2.2.1);
 with the app stopped the CLI copies the tree in and you start it as usual.
 **C needs a restart**, because the manifest and code are read at registration.
+
+The manifest declares `qwenpaw_version: >=1.1.6, <2.3.0` — note `max` is
+**right-open** in QwenPaw (`_version_compat.py`), so `2.2.x` is inside the range
+while `"max": "2.2.1"` would exclude the very build this was tested on. Today the
+host enforces only `>= min`; the upper bound is deliberately disabled pending
+re-enable, and a stale `max` becomes a hard refusal the day it comes back.
 
 ### 2 · Give it judges
 
@@ -472,6 +478,7 @@ brief:
 
 | Version | Change |
 |---|---|
+| v1.4.9 | declared `qwenpaw_version.max` raised to `2.3.0` — it had been excluding every host the plugin runs on |
 | v1.4.8 | no behaviour change — first GitHub Release (tag-triggered packaging + publishing), README restructured around it |
 | v1.4.7 | the two retry reasons (degenerate reply vs transient endpoint failure) are counted and reported separately |
 | v1.4.6 | a transient endpoint failure (502 / network / timeout) is retried once after 1s; auth and capacity errors still never are |
