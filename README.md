@@ -188,10 +188,17 @@ the result is one model's opinion, not a consensus).
 | `qwen35` | `qwen3.5-122b-a10b-fp8` (thinking off) | `NEW_API_URL` + `NEW_API_KEY` | Qwen (vLLM) |
 | `glm` | `glm-5.2` | `SENSENOVA_BASE_URL` + `SENSENOVA_API_KEY` | GLM (Zhipu) |
 
-Zero-config when these env vars exist; any judge with a missing/dead endpoint
-is skipped and reported, so a single expired token no longer breaks consensus.
-These three names are *this author's* gateways — override `judges_json` with
-any three cross-family models you actually have keys for.
+Zero-config **only if these env vars exist** — they are this author's private
+gateways, published as a worked example rather than as a public default. On a
+clean install with only public provider keys none of the three resolves, the run
+degrades to the setup wizard, and that is the intended entry point: put your own
+cross-family trio in `judges_json` (or `JUDGE_MODELS` for three models on one
+gateway). Any judge whose endpoint is missing or dead is skipped and named in the
+report, so a single expired token no longer breaks consensus.
+
+There is deliberately no built-in public-vendor lineup: vendor model names rotate
+fast enough that a hardcoded trio becomes a worse default than none, and a
+lineup nobody here can measure against live endpoints is not worth shipping.
 
 ### Judge entry fields
 
