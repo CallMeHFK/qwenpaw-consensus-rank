@@ -58,11 +58,12 @@ plugin's startup hook immediately — **no restart** (measured on QwenPaw 2.2.1)
 with the app stopped the CLI copies the tree in and you start it as usual.
 **C needs a restart**, because the manifest and code are read at registration.
 
-The manifest declares `qwenpaw_version: >=1.1.6, <2.3.0` — note `max` is
-**right-open** in QwenPaw (`_version_compat.py`), so `2.2.x` is inside the range
-while `"max": "2.2.1"` would exclude the very build this was tested on. Today the
-host enforces only `>= min`; the upper bound is deliberately disabled pending
-re-enable, and a stale `max` becomes a hard refusal the day it comes back.
+The manifest declares `qwenpaw_version: >=1.1.6, <2.3.0` — `max` is
+**right-open** in QwenPaw, so the 2.2 line is inside the range while `2.3.0`
+is not (a ceiling of `2.2.1` would refuse the tested host itself). The probe
+evidence lives in
+[docs/measurements/2026-10-09-version-window](docs/measurements/2026-10-09-version-window/FINDINGS.md);
+the full post-mortem is in the [changelog](docs/CHANGELOG.md).
 
 ### 2 · Give it judges
 
@@ -176,11 +177,11 @@ the result is one model's opinion, not a consensus).
 1. Tool argument `judges` (JSON array string) — per-call lineups
 2. Plugin config field `judges_json` (Settings UI) — fixed lineup
 3. `JUDGE_MODELS` env (comma-separated model names on the global gateway)
-4. Built-in defaults — a **cross-family, multi-endpoint lineup** (see below);
-   judges whose endpoint is unset or unreachable are **skipped with a
-   warning** instead of failing the whole run
+4. Built-in lineup — the author's private gateways, shipped as a worked
+   example (see below); judges whose endpoint is unset or unreachable are
+   **skipped with a warning** instead of failing the whole run
 
-### Built-in default lineup (v1.1+)
+### Built-in lineup — the author's private gateways (v1.1+)
 
 | Judge | Model | Endpoint env | Family |
 |---|---|---|---|
@@ -189,12 +190,14 @@ the result is one model's opinion, not a consensus).
 | `glm` | `glm-5.2` | `SENSENOVA_BASE_URL` + `SENSENOVA_API_KEY` | GLM (Zhipu) |
 
 Zero-config **only if these env vars exist** — they are this author's private
-gateways, published as a worked example rather than as a public default. On a
-clean install with only public provider keys none of the three resolves, the run
-degrades to the setup wizard, and that is the intended entry point: put your own
-cross-family trio in `judges_json` (or `JUDGE_MODELS` for three models on one
-gateway). Any judge whose endpoint is missing or dead is skipped and named in the
-report, so a single expired token no longer breaks consensus.
+gateways, published as a worked example rather than as a public default. The
+intended entry point is your own cross-family trio in `judges_json` (or
+`JUDGE_MODELS` for three models on one gateway). With no provider key visible
+at all, the first call returns the setup wizard; with some *other* provider
+configured but none of these three, every built-in judge fails and the run
+reports `all judges failed`, naming each dead endpoint. Either way a single
+expired token never breaks consensus — a judge whose endpoint is missing or
+dead is skipped and named in the report.
 
 There is deliberately no built-in public-vendor lineup: vendor model names rotate
 fast enough that a hardcoded trio becomes a worse default than none, and a
@@ -416,7 +419,7 @@ How to read it:
 | Symptom | Meaning |
 |---|---|
 | `/api/plugins` shows the version but the report still uses old wording / no `位置稳定性` column | the process runs a previous build — restart (path C installs by hand, so nothing hot-loads it) |
-| `all judges failed; check base_url / api_key_env` | keys not visible to the process (`envs.json` edited but not restarted) |
+| `all judges failed; check base_url / api_key_env` | some provider key *is* visible, but the resolved judges' own endpoints/keys are missing or dead — the error names each judge's failure (with no key visible at all you'd get the setup wizard instead) |
 | first call returns the setup wizard | no provider key is visible — that also proves the plugin loaded |
 | `base_url 取到的是 QwenPaw 密文（ENC:...）` | the tool was invoked outside QwenPaw; run it inside the app |
 | tools list still shows an old `description` after upgrading | known host behaviour: entries already written into `workspaces/<agent>/agent.json` are **never refreshed** — both write sites are guarded by `if tool_name not in builtin_tools` (`plugins/api.py:287`, `app/routers/plugins.py:293`). Delete that entry and restart to have it re-created from the current manifest. The tool *function* comes from the plugin, so behaviour is current; only the listed description is stale. |
@@ -485,12 +488,11 @@ brief:
 
 | Version | Change |
 |---|---|
+| v1.4.10 | review follow-up: `judges_json` help stops calling the built-in trio "defaults", the version window is pinned by a test, and v1.4.9's host-behaviour claims gain probe evidence |
 | v1.4.9 | declared `qwenpaw_version.max` raised to `2.3.0` — it had been excluding every host the plugin runs on |
 | v1.4.8 | no behaviour change — first GitHub Release (tag-triggered packaging + publishing), README restructured around it |
 | v1.4.7 | the two retry reasons (degenerate reply vs transient endpoint failure) are counted and reported separately |
 | v1.4.6 | a transient endpoint failure (502 / network / timeout) is retried once after 1s; auth and capacity errors still never are |
-| v1.4.5 | a reply parsing to <2 labels is retried once with a positively restated format line |
-| v1.4.4 | task wording can no longer override the ranking output shape; the claimed effect was measured and **retracted** in the changelog |
 
 ## License
 

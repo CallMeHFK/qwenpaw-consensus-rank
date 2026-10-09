@@ -2,7 +2,31 @@
 
 All notable changes to the `listwise-rank` QwenPaw plugin. The README keeps only the recent entries; this file has the full history, newest first.
 
-### v1.4.9 (2026-09-22)
+### v1.4.10 (2026-10-09)
+
+Review follow-up on v1.4.9 — no change to the tool's behaviour, prompt or
+report.
+
+- **The `judges_json` help text still sold the built-in trio as
+  "cross-endpoint defaults"** — the one surface (the host's Settings UI) seen
+  by exactly the users who never read the README. It now says plainly that the
+  shipped lineup is the author's private gateways, a worked example that
+  resolves to dead, skipped endpoints anywhere else.
+- **The version window is now pinned by a test.**
+  `tests/test_packaging.py::VersionWindowTest` asserts `min <= 2.2.1 < max`
+  against the real manifest, so the v1.4.8 regression class (a stale `max`
+  shrinking past the tested host) fails CI instead of shipping. Suite 119 → 120.
+- **The v1.4.9 claims now carry in-repo evidence**: the right-open semantics
+  and the disabled upper bound were re-probed against the installed QwenPaw
+  2.2.1 package; script and output live in
+  `docs/measurements/2026-10-09-version-window/`.
+- README corrections: the built-in-lineup section no longer claims a run with
+  unrelated provider keys "degrades to the setup wizard" (the wizard requires
+  *no* visible provider key; otherwise the run reports `all judges failed`
+  with each dead endpoint named), the section heading stops calling the trio a
+  "default", and the v1.4.9 entry below now carries its real date.
+
+### v1.4.9 (2026-09-23)
 
 - **The declared QwenPaw ceiling excluded every host this plugin actually
   runs on.** `plugin.json` said `qwenpaw_version.max: 2.1.0` while v1.4.2 onward

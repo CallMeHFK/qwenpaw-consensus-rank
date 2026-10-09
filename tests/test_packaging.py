@@ -195,6 +195,27 @@ class TagGuardTest(unittest.TestCase):
         self.assertEqual([n for n in names if n.startswith("listwise-rank/tests/")], [])
 
 
+class VersionWindowTest(unittest.TestCase):
+    """v1.4.8 shipped qwenpaw_version.max=2.1.0 while every host this plugin
+    runs on is 2.2.1 — the right-open window excluded the tested build, inert
+    only because the host currently skips the upper-bound check. Pin it."""
+
+    # Bump when the dev/CI host moves; probe evidence lives in
+    # docs/measurements/2026-10-09-version-window/.
+    TESTED_HOST = (2, 2, 1)
+
+    def test_declared_window_covers_the_tested_host(self):
+        manifest = json.loads((_ROOT / "plugin.json").read_text(encoding="utf-8"))
+        qv = manifest["qwenpaw_version"]
+
+        def parse(v):
+            return tuple(int(p) for p in v.split("."))
+
+        self.assertLessEqual(parse(qv["min"]), self.TESTED_HOST)
+        # max is right-open in QwenPaw: tested == max would refuse the host.
+        self.assertLess(self.TESTED_HOST, parse(qv["max"]))
+
+
 class ReleaseNotesTest(unittest.TestCase):
     _CHANGELOG = (
         "# Changelog\n"
